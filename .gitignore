@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Runtime data — pulp-db collections, signing key, bootstrap secrets.
+# Never commit: data/keys/ holds the JWT signing key and data/.bootstrap-code
+# is a live admin credential.
+data/
+
+# Logs / debug output
+*.log
+npm-debug.log*
+
+# Editor / OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
