@@ -73,8 +73,8 @@ one both positionally *and* by flag is an error. No other file needs editing.
   `guestList`); anyone else → 404 (hide). Both `events.get` and `events.list`
   synthesize a **`guestList`** from reservations (one scan grouped by event) —
   entries `{ id, name?, response?, guests }` (Facebook-style: participants see
-  who's coming). `GET /events/:eventId/config` (bare config, `/view`) still
-  exists but is largely subsumed by the graded get.
+  who's coming). (`PATCH /events/:eventId/config` remains for editing config;
+  there's no GET on that path — read config via the graded `GET /events/:id`.)
 - `reservations` — an account's RSVP to an event, one per (event, account),
   keyed `<eventId>~<accountId>`. `PUT/GET/DELETE /events/:eventId/reservation`
   gated (in-handler) on `/events/:id/join`; `accountId` defaults to the caller,

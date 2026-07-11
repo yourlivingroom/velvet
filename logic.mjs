@@ -413,26 +413,6 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
             }
         },
 
-        'events.getConfig': {
-            summary: "Fetch just an event's config document.",
-            http: { method: 'GET', path: '/events/:eventId/config' },
-            input: {
-                type: 'object',
-                additionalProperties: false,
-                required: ['eventId'],
-                properties: {
-                    eventId: { type: 'string', description: 'Event id (evt_…).' }
-                }
-            },
-            // The user-facing view: needs the event's /view permission (an
-            // invited viewer has it; so does any admin via `**`).
-            handler: async ({ eventId }, ctx) => {
-                if (!ctx.can(`/events/${eventId}/view`)) return null;
-                const event = await eventCol.getDoc(eventId);
-                return event === null ? null : event.config;
-            }
-        },
-
         'events.list': {
             summary: 'List all events.',
             requires: '/server/admin',
