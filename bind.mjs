@@ -1,3 +1,5 @@
+import { ClientError } from './errors.mjs';
+
 // Pure helpers that project a logic.mjs action descriptor onto each interface.
 // Every adapter (cli / rest / mcp) goes through these, so the registry stays
 // the single source of truth.
@@ -29,6 +31,18 @@ export function splitInput(action) {
     };
 }
 
+// Help text for a property on the CLI: the shared, interface-neutral
+// description plus any hint the CLI adapter must add for its own mechanics.
+// Object/array properties arrive as JSON strings (see coerceCliInput), so we
+// say so here rather than polluting the registry description with "CLI: …".
+export function cliSummary(prop) {
+    const base = prop?.description;
+    const isJson = prop?.type === 'object' || prop?.type === 'array';
+    if (!isJson) return base;
+    const hint = 'pass as a JSON string';
+    return base ? `${base} (${hint})` : hint;
+}
+
 // Flat JSON Schema -> sbopts flags map.
 export function schemaToFlags(schema) {
     const required = new Set(schema.required ?? []);
@@ -40,9 +54,10 @@ export function schemaToFlags(schema) {
                 : ['string', 'number', 'boolean'].includes(prop.type) ? prop.type
                 : 'string';
 
+        const summary = cliSummary(prop);
         flags[name] = {
             type,
-            ...(prop.description ? { summary: prop.description } : {}),
+            ...(summary ? { summary } : {}),
             ...(prop.enum ? { choices: prop.enum } : {}),
             ...(required.has(name) ? { required: true } : {})
         };
@@ -63,4 +78,28 @@ export function toMcpTool(name, action) {
 export function stripUndefined(obj) {
     return Object.fromEntries(
             Object.entries(obj).filter(([, v]) => v !== undefined));
+}
+
+// Build a handler input from raw CLI flags. Nested-typed properties (object /
+// array) are the sbopts escape hatch: they arrive as JSON strings and get
+// parsed here, so `--config '{"a":1}'` and `--patch '[...]'` just work.
+export function coerceCliInput(schema, flags) {
+    const props = schema.properties ?? {};
+    const out = {};
+    for (const [k, v] of Object.entries(flags)) {
+        if (v === undefined) continue;
+        const type = props[k]?.type;
+        if ((type === 'object' || type === 'array') && typeof v === 'string') {
+            try {
+                out[k] = JSON.parse(v);
+            }
+            catch (e) {
+                throw new ClientError(`--${k} must be valid JSON: ${e.message}`);
+            }
+        }
+        else {
+            out[k] = v;
+        }
+    }
+    return out;
 }

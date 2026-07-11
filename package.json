@@ -22,6 +22,7 @@
     "@livingroom/cardcatalog": "file:../cardcatalog",
     "@livingroom/pulp-db": "file:../pulp-db",
     "@shieldsbetter/sbopts": "file:../sbopts",
+    "fast-json-patch": "^3.1.1",
     "fastify": "^5.6.2",
     "jose": "^6.2.3"
   }

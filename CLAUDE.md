@@ -1,8 +1,8 @@
 # velvet
 
 A self-hosted event-management server. Status: **API only**, auth nailed down,
-domain still placeholder (`invites`/`sessions` are stand-ins). Not yet wired to
-a real claude.ai connection.
+first domain model (`events`) landing; `invites`/`sessions` still stand-ins. Not
+yet wired to a real claude.ai connection.
 
 ## The one idea
 
@@ -11,14 +11,15 @@ and mechanically projected onto four interfaces. Never hand-write an interface �
 add to the registry and all four update.
 
 ```
-logic.mjs   THE registry. action = { summary, requireAdmin?, http:{method,path},
-            input:<JSON Schema>, handler(input) }
-bind.mjs    pure projections: schema -> sbopts flags, schema -> path/body split,
-            -> MCP tool
-cli.mjs     sbopts command tree   (dotted name `invites.create` -> `velvet invites create`)
+logic.mjs   THE registry. action = { summary, description?, requireAdmin?,
+            payload?, http:{method, path, mediaType?}, input:<JSON Schema>, handler }
+bind.mjs    pure projections: schema -> sbopts flags, path/payload split, -> MCP
+            tool; cliSummary() folds CLI-only hints into help text
+cli.mjs     sbopts command tree; path params + payload -> positionals (or --flags)
 rest.mjs    Fastify routes        (input schema -> params/body/querystring + validation)
 mcp.mjs     stateless Streamable-HTTP MCP endpoint (tools/list + tools/call == registry)
 auth.mjs    Resource Server (JWT validation) + bootstrap issuer
+errors.mjs  ClientError(msg, statusCode) — the caller-error seam adapters map
 server.mjs  REST + OpenAPI(/docs) + MCP + auth in one Fastify process
 index.mjs   args -> CLI; else -> server
 ```
@@ -28,17 +29,42 @@ and (flattened) sbopts all speak.
 
 ## Adding an action
 
-Add one entry to the `actions` object in `logic.mjs`:
+Add one entry to the `actions` object in `logic.mjs`. `input` is a JSON Schema
+object; each property plays one of **three roles**, and every interface renders
+each role in its own idiom:
 
-- `input` must be a **flat object of scalars/arrays**. That's the sbopts ceiling;
-  keep it flat so it renders losslessly to flags, HTTP body/query, and MCP schema.
-- `http: { method, path }` — `:name` segments are path params, drawn from `input`
-  properties; the rest become body (writes) or querystring (GET).
-- `requireAdmin: true` marks it admin-only (see Auth).
-- `handler(input)` returns a value (serialized to all interfaces). Returning
-  `null` means "not found" → REST 404.
+- **path params** — the `:name` segments of `http.path`. REST: URL segment.
+  CLI: leading positional (also `--name`). MCP: named arg.
+- **payload** — name one property in `payload:` to make it the action's single
+  top-level value. REST: the *bare* request body (media type from
+  `http.mediaType`, e.g. `application/json-patch+json`). CLI: trailing positional
+  (also `--name`). MCP: named arg.
+- **record fields** — everything else. REST: JSON body object (writes) /
+  querystring (GET). CLI: `--flag`. MCP: named arg.
 
-No other file needs editing. The adapters read the registry.
+Keep record fields **flat scalars** (the sbopts ceiling). Nested inputs (object
+/ array) still work: on the CLI they arrive as JSON strings (parsed by
+`coerceCliInput`, auto-hinted in help by `cliSummary`); on REST/MCP they're
+native JSON.
+
+Other keys:
+- `requireAdmin: true` — admin-only (see Auth).
+- `handler(input)` returns a value (serialized to all interfaces). `null` means
+  "not found" → REST 404. Throw `ClientError(msg, status)` for caller errors →
+  REST maps the status, MCP an `isError` result, CLI stderr + exit 1.
+
+CLI positionals (path params, then payload) fill left-to-right; giving the same
+one both positionally *and* by flag is an error. No other file needs editing.
+
+## Domain (so far)
+
+- `events` — the first real model. The stored doc separates **our** metadata
+  (top-level: `id` = `evt_…`, `createdAt`) from the **user's** `config` (an
+  arbitrary JSON document). Only `config` is user-editable, and only via JSON
+  Patch (RFC 6902) at `PATCH /events/:eventId/config` (`events.patch`, whose
+  `payload` is the ops array). `GET /events/:eventId/config` returns just the
+  config; `GET /events/:eventId` the whole doc.
+- `invites` / `sessions` — still placeholder stand-ins.
 
 ## Auth model
 
