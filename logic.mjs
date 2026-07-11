@@ -395,36 +395,33 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                 }
             },
             handler: async ({ eventId }, ctx) => {
-                const admin = ctx.can(`/events/${eventId}/admin`);
-                const participant = admin
-                        || ctx.can(`/events/${eventId}/view`)
-                        || ctx.can(`/events/${eventId}/join`);
+                const { admin, participant } = eventAccess(eventId, ctx);
                 if (!participant) return null;          // 404: hide existence
 
                 const event = await eventCol.getDoc(eventId);
                 if (event === null) return null;
                 const guestList = (await guestListsByEvent()).get(eventId) ?? [];
-
-                // Admins see our metadata; everyone else a whitelisted user view
-                // (so new admin-only fields never leak by default).
-                return admin
-                        ? { ...event, guestList }
-                        : { id: event.id, config: event.config, guestList };
+                return projectEvent(event, guestList, admin);
             }
         },
 
         'events.list': {
-            summary: 'List all events.',
-            requires: '/server/admin',
+            summary: 'List events you can see (all of them, for admins).',
             http: { method: 'GET', path: '/events' },
             input: { type: 'object', additionalProperties: false, properties: {} },
-            handler: async () => {
+            // Each event graded like the single get; events you have no
+            // permission on are simply omitted (not 404 — they're not "yours").
+            handler: async (_input, ctx) => {
                 const [events, lists] = await Promise.all([
                     eventCol.listDocs(), guestListsByEvent()
                 ]);
-                return events.map(e => ({
-                    ...e, guestList: lists.get(e.id) ?? []
-                }));
+                const out = [];
+                for (const e of events) {
+                    const { admin, participant } = eventAccess(e.id, ctx);
+                    if (!participant) continue;
+                    out.push(projectEvent(e, lists.get(e.id) ?? [], admin));
+                }
+                return out;
             }
         },
 
@@ -688,4 +685,25 @@ function stripUndefined(obj) {
 // The secret token is shown once, in the create response; reads omit it.
 function withoutToken({ token, ...rest }) {
     return rest;
+}
+
+// How a caller may see an event: `admin` (full doc) if they hold its /admin
+// permission; `participant` (user view) if they hold /admin, /view, or /join.
+// (An admin's `**` matches /admin for every event.)
+function eventAccess(eventId, ctx) {
+    const admin = ctx.can(`/events/${eventId}/admin`);
+    return {
+        admin,
+        participant: admin
+                || ctx.can(`/events/${eventId}/view`)
+                || ctx.can(`/events/${eventId}/join`)
+    };
+}
+
+// Admins see our metadata; participants a whitelisted user view (so new
+// admin-only fields never leak by default). Both get the guest list.
+function projectEvent(event, guestList, admin) {
+    return admin
+            ? { ...event, guestList }
+            : { id: event.id, config: event.config, guestList };
 }

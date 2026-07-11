@@ -70,7 +70,11 @@ one both positionally *and* by flag is an error. No other file needs editing.
   (`events.patch`, whose `payload` is the ops array). `GET /events/:eventId` is
   **graded**: admins (`/events/:id/admin`) get the full doc; participants
   (`/view` *or* `/join`) get a whitelisted user view (`id`, `config`,
-  `guestList`); anyone else → 404 (hide). Both `events.get` and `events.list`
+  `guestList`); anyone else → 404 (hide). `GET /events` (`events.list`) is
+  **"my events"** — no admin gate; it returns only the events you participate in
+  (via `/view`/`/join`/`/admin`), each graded the same way (admins get all).
+  `eventAccess()` + `projectEvent()` are shared by both so an event appears in
+  your list exactly when you could open it, and looks identical either way. Both
   synthesize a **`guestList`** from reservations (one scan grouped by event) —
   entries `{ id, name?, response?, guests }` (Facebook-style: participants see
   who's coming). (`PATCH /events/:eventId/config` remains for editing config;
