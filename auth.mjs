@@ -29,8 +29,22 @@ import { SignJWT, jwtVerify } from 'jose';
 
 const CODE_TTL_MS = 3 * 60 * 1000;
 const ACCESS_TTL = '1h';
+const ACCESS_TTL_S = 3600;      // seconds — matches ACCESS_TTL, for cookie Max-Age
 const REFRESH_TTL = '30d';
 const REDEEM_LIMIT_PER_MIN = 20;
+
+// The BFF session cookie: the browser's *only* credential. HttpOnly (invisible
+// to JS — the whole point), SameSite=Lax (blocks cross-site state-changing
+// sends → CSRF cover), and Secure only under https (else it breaks on
+// http://localhost). Its value is the access-token JWT itself (stateless).
+const SESSION_COOKIE = 'velvet_session';
+
+// The CSRF token cookie (double-submit, HMAC flavor). Deliberately NOT HttpOnly
+// so the SPA can read it and echo it in the X-CSRF-Token header on writes. Its
+// value is HMAC(sub) — an attacker can't compute it (no key) nor read it
+// (cross-origin), and can't set the header cross-site (CORS preflight), so a
+// forged request can't present a matching token. See csrfGuard.
+const CSRF_COOKIE = 'velvet_csrf';
 
 function base64url(buf) {
     return buf.toString('base64')
@@ -65,6 +79,14 @@ export async function registerAuth(fastify,
     const resource = `${publicUrl}/mcp`;
     const refreshAud = `${publicUrl}/oauth/refresh`;
     const key = await loadOrCreateKey(rootPath);
+
+    // CSRF token = HMAC(sub) under a subkey *derived* from the signing key
+    // (domain-separated so it never doubles as a JWT-signing key). Deterministic
+    // per session, verified by recomputation — no server-side store.
+    const csrfKey = crypto.createHmac('sha256', key)
+            .update('velvet-csrf-v1').digest();
+    const csrfToken = (sub) =>
+            crypto.createHmac('sha256', csrfKey).update(sub).digest('hex');
 
     // Bootstrap codes: a pulp-db collection keyed by `<code>.json`.
     const codes = pulpDb({}, {
@@ -160,11 +182,11 @@ export async function registerAuth(fastify,
         return false;
     }
 
-    // REST front-end: no browser, no PKCE — terminal possession is the proof.
     // A standalone helper page (not an API door): drives the bootstrap flow so
     // the operator can log the browser in as admin without curling. It requests
-    // a code (printed to the terminal), redeems it, and stashes the admin JWT in
-    // localStorage for the SPA to use.
+    // a code (printed to the terminal), then redeems it via the BFF
+    // `/session/bootstrap`, which sets the HttpOnly session cookie — no token
+    // ever reaches page JS.
     fastify.get('/admin', { schema: { hide: true } }, async (request, reply) => {
         reply.type('text/html');
         return adminPage();
@@ -230,15 +252,63 @@ export async function registerAuth(fastify,
     }
 
     // Resolve a caller's identity without sending anything; null if absent or
-    // invalid. Both guards build on this.
-    async function authenticate(request) {
+    // invalid. Bearer is the API/MCP credential; the session cookie is the
+    // browser's — but only honored when the caller opts in (`{ cookie: true }`),
+    // so /mcp stays Bearer-only (a cookie there would be a CSRF vector).
+    async function authenticate(request, { cookie = false } = {}) {
         const m = /^Bearer (.+)$/i.exec(request.headers.authorization ?? '');
-        if (!m) return null;
+        const token = m ? m[1]
+                : (cookie ? request.cookies?.[SESSION_COOKIE] : undefined);
+        if (!token) return null;
         try {
-            return await verify(m[1]);
+            return await verify(token);
         }
         catch {
             return null;
+        }
+    }
+
+    // Cookie options for setting the session. Secure tracks the public scheme.
+    const sessionCookieOpts = () => ({
+        httpOnly: true,
+        sameSite: 'lax',
+        path: '/',
+        secure: issuer.startsWith('https'),
+        maxAge: ACCESS_TTL_S
+    });
+
+    // Set both cookies at login: the HttpOnly session JWT, and the readable CSRF
+    // token bound to this session's sub.
+    const setSession = (reply, accessToken, sub) => {
+        reply.setCookie(SESSION_COOKIE, accessToken, sessionCookieOpts());
+        reply.setCookie(CSRF_COOKIE, csrfToken(sub),
+                { ...sessionCookieOpts(), httpOnly: false });  // JS must read it
+    };
+    const clearSession = (reply) => {
+        reply.clearCookie(SESSION_COOKIE, { path: '/' });
+        reply.clearCookie(CSRF_COOKIE, { path: '/' });
+    };
+
+    // onRequest guard for state-changing REST routes (wired in by rest.mjs after
+    // attachAuth). CSRF only threatens *cookie-authenticated* writes, so this
+    // skips safe methods, Bearer callers (CLI/tools — not browsers), and requests
+    // with no session cookie; otherwise it demands X-CSRF-Token == HMAC(sub).
+    async function csrfGuard(request, reply) {
+        if (request.method === 'GET' || request.method === 'HEAD'
+                || request.method === 'OPTIONS') return;
+        if (/^Bearer /i.test(request.headers.authorization ?? '')) return;
+        if (!request.cookies?.[SESSION_COOKIE]) return;
+        const sub = request.auth?.sub;
+        if (!sub) return;   // cookie invalid/expired → handler sees no grants anyway
+        const provided = request.headers['x-csrf-token'];
+        const expected = csrfToken(sub);
+        const ok = typeof provided === 'string'
+                && provided.length === expected.length
+                && crypto.timingSafeEqual(
+                        Buffer.from(provided), Buffer.from(expected));
+        if (!ok) {
+            return reply.code(403).send({
+                error: 'csrf', detail: 'missing or invalid CSRF token' });
         }
     }
 
@@ -247,6 +317,66 @@ export async function registerAuth(fastify,
         if (!auth) return unauthorized(reply);
         request.auth = auth;
     }
+
+    // ---- BFF session surface (the browser's ONLY auth door) ----------------
+    // Same core as the Bearer redeem endpoints above, but the access token
+    // leaves as an HttpOnly Set-Cookie instead of a JSON body — so the JWT never
+    // touches JS-reachable script. The browser never calls /bootstrap/redeem or
+    // /invites/redeem (which stay for CLI/CI/native Bearer clients).
+
+    // Admin login: redeem a bootstrap code → session cookie.
+    fastify.post('/session/bootstrap', { schema: { hide: true } },
+            async (request, reply) => {
+                if (rateLimited()) {
+                    return reply.code(429).send({ error: 'rate_limited' });
+                }
+                if (!await redeemCode((request.body ?? {}).code)) {
+                    return reply.code(401).send({ error: 'invalid_code' });
+                }
+                const { access_token } = await issueTokens();
+                setSession(reply, access_token, 'bootstrap-admin');
+                return { ok: true };
+            });
+
+    // Invite login: redeem an invite token → non-admin session cookie. Returns
+    // only the suggested entrypoint (never the token).
+    fastify.post('/session/invite', { schema: { hide: true } },
+            async (request, reply) => {
+                if (rateLimited()) {
+                    return reply.code(429).send({ error: 'rate_limited' });
+                }
+                const result = redeemInvite
+                        ? await redeemInvite((request.body ?? {}).token)
+                        : null;
+                if (!result) {
+                    return reply.code(401).send({ error: 'invalid_token' });
+                }
+                const { access_token } = await issueTokens(result.accountId, []);
+                setSession(reply, access_token, result.accountId);
+                return { entrypoint: result.entrypoint };
+            });
+
+    // Who am I? The SPA's replacement for decoding the JWT client-side. Also
+    // (re)issues the CSRF cookie, so any live session self-heals a missing one
+    // on the SPA's load-time /session fetch.
+    fastify.get('/session', { schema: { hide: true } },
+            async (request, reply) => {
+                const auth = await authenticate(request, { cookie: true });
+                if (!auth) return reply.code(401).send({ error: 'unauthenticated' });
+                reply.setCookie(CSRF_COOKIE, csrfToken(auth.sub),
+                        { ...sessionCookieOpts(), httpOnly: false });
+                return {
+                    accountId: auth.sub,
+                    isAdmin: auth.roles?.includes('admin') ?? false
+                };
+            });
+
+    // Logout: drop both cookies.
+    fastify.delete('/session', { schema: { hide: true } },
+            async (request, reply) => {
+                clearSession(reply);
+                return { ok: true };
+            });
 
     fastify.get('/.well-known/oauth-protected-resource', { schema: { hide: true } },
             async () => ({
@@ -361,6 +491,7 @@ export async function registerAuth(fastify,
         authenticate,   // best-effort: resolve caller identity, never rejects
         requireAuth,    // onRequest guard for /mcp (401 + WWW-Authenticate)
         challenge: unauthorized,   // send the 401 + WWW-Authenticate response
+        csrfGuard,      // onRequest guard for cookie-authenticated REST writes
         async close() { await codes.close(); }
     };
 }
@@ -412,7 +543,7 @@ inputmode="latin" autocomplete="off"></label>
 }
 
 // The /admin bootstrap-login helper page. Two steps: request a code (printed to
-// the terminal), then redeem it — storing the admin JWT for the SPA.
+// the terminal), then redeem it via the BFF — establishing the session cookie.
 function adminPage() {
     return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -465,15 +596,14 @@ $('request').addEventListener('click', async () => {
 $('login').addEventListener('click', async () => {
   const code = $('code').value.trim().replace(/\\s+/g, '');
   status('Logging in…');
-  const r = await fetch('/bootstrap/redeem', {
+  // BFF: sets the HttpOnly session cookie server-side; no token comes back.
+  const r = await fetch('/session/bootstrap', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ code })
   });
   const body = await r.json().catch(() => ({}));
-  if (r.ok && body.access_token) {
-    localStorage.setItem('velvet.accessToken', body.access_token);
-    if (body.refresh_token) localStorage.setItem('velvet.refreshToken', body.refresh_token);
+  if (r.ok && body.ok) {
     $('form').hidden = true;
     $('request').closest('.step').hidden = true;
     $('done').hidden = false;

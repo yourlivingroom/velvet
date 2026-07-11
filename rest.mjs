@@ -10,15 +10,19 @@ import { ClientError } from './errors.mjs';
 // the handler still learns who's calling — that's how a handler can quietly 404
 // the unauthorized (hide existence) rather than challenge them.
 export function registerRest(fastify, actions,
-        { authenticate, challenge, makeContext } = {}) {
-    // Populate request.auth from the Bearer token if present; never rejects.
+        { authenticate, challenge, csrfGuard, makeContext } = {}) {
+    // Populate request.auth from the Bearer token OR the browser session cookie;
+    // never rejects. REST is the SPA's data surface, so it honors the cookie
+    // (unlike /mcp, which stays Bearer-only — see auth.authenticate).
     const attachAuth = authenticate
-            ? async (request) => { request.auth = await authenticate(request); }
+            ? async (request) => {
+                request.auth = await authenticate(request, { cookie: true });
+            }
             : null;
 
     // Loud guard for an action that `requires` a permission.
     const requirePermission = (permission) => async (request, reply) => {
-        const auth = await authenticate(request);
+        const auth = await authenticate(request, { cookie: true });
         if (!auth) return challenge(reply);   // 401 + WWW-Authenticate
         request.auth = auth;
         const ctx = await makeContext(auth);
@@ -89,15 +93,19 @@ export function registerRest(fastify, actions,
             else schema.querystring = restSchema;   // GET (DELETE here has none)
         }
 
-        const onRequest = action.requires && authenticate
+        // onRequest chain: attach identity (or loud-guard a `requires` route),
+        // then the CSRF guard — which runs after request.auth is set and no-ops
+        // for non-cookie / safe-method requests.
+        const authStep = action.requires && authenticate
                 ? requirePermission(action.requires)
                 : attachAuth;
+        const onRequest = [authStep, csrfGuard].filter(Boolean);
 
         fastify.route({
             method,
             url: path,
             schema,
-            ...(onRequest ? { onRequest } : {}),
+            ...(onRequest.length ? { onRequest } : {}),
             handler: async (request, reply) => {
                 const input = { ...request.params };
                 if (bodyProp) {

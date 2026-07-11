@@ -1,46 +1,30 @@
-import React, { useEffect, useState } from 'react';
+import React, { useContext, useEffect, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 
 // Fetches from the same paths the app is mounted at — Accept: application/json
-// keeps the server from handing back the SPA shell. The admin token (if any) is
-// stashed in localStorage by the /admin login helper.
-const api = (path, opts = {}) => {
-    const token = localStorage.getItem('velvet.accessToken');
-    return fetch(path, {
-        ...opts,
-        headers: {
-            Accept: 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            ...opts.headers
-        }
-    }).then((r) => r.json());
-};
-
-// Decode the JWT payload (no verification — we only need the claims to decide
-// which affordances to offer). Returns null when there's no/invalid token.
-function claims() {
-    const token = localStorage.getItem('velvet.accessToken');
-    if (!token) return null;
-    try {
-        const b64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-        const pad = '='.repeat((4 - (b64.length % 4)) % 4);
-        return JSON.parse(atob(b64 + pad));
-    } catch {
-        return null;
-    }
+// keeps the server from handing back the SPA shell. Auth rides the HttpOnly
+// `velvet_session` cookie the BFF sets at login; being same-origin, the browser
+// attaches it automatically, and JS can't read it (that's the point).
+//
+// For writes we complete the CSRF double-submit: read the (readable) velvet_csrf
+// cookie and echo it in X-CSRF-Token. A cross-site attacker can send the session
+// cookie but can't set this header (CORS preflight) nor read the token, so the
+// server's HMAC check rejects the forgery.
+function csrfHeaders(method) {
+    if (!method || method.toUpperCase() === 'GET') return {};
+    const m = document.cookie.match(/(?:^|;\s*)velvet_csrf=([^;]*)/);
+    return m ? { 'X-CSRF-Token': decodeURIComponent(m[1]) } : {};
 }
+const api = (path, opts = {}) => fetch(path, {
+    ...opts,
+    headers: { Accept: 'application/json', ...csrfHeaders(opts.method), ...opts.headers }
+}).then((r) => r.json());
 
-// Am I logged in as an admin? (Read the JWT's roles claim.)
-const isAdmin = () => (claims()?.roles ?? []).includes('admin');
-
-// Is there a live (unexpired) token? We only read the `exp` claim — the server
-// is the real authority, but this lets the UI say "you're not logged in" up
-// front instead of rendering an empty list / "not found" for a stale token.
-function loggedIn() {
-    const c = claims();
-    if (!c) return false;
-    return typeof c.exp !== 'number' || c.exp * 1000 > Date.now();
-}
+// Who's signed in — resolved once from GET /session (the server decodes the
+// cookie; the client can't). `{ accountId, isAdmin }`, or null when logged out.
+// Provided by <App>; read via useSession() anywhere below it.
+const SessionContext = React.createContext(null);
+const useSession = () => useContext(SessionContext);
 
 const wrap = {
     font: '16px/1.5 system-ui', maxWidth: 640, margin: '3rem auto', padding: '0 1rem'
@@ -156,6 +140,7 @@ function RsvpStrip({ eventId, current, guests, onDone }) {
 }
 
 function EventDetail({ id }) {
+    const session = useSession();
     const [event, setEvent] = useState(undefined);
     const [editing, setEditing] = useState(false);
     const [form, setForm] = useState({ title: '', description: '' });
@@ -178,8 +163,8 @@ function EventDetail({ id }) {
 
     const config = event.config ?? {};
     const guests = event.guestList ?? [];
-    // My own RSVP (if any) — the guest list is keyed by account id (== my `sub`).
-    const mine = guests.find((g) => g.id === claims()?.sub);
+    // My own RSVP (if any) — the guest list is keyed by account id.
+    const mine = guests.find((g) => g.id === session.accountId);
 
     const startEdit = () => {
         setForm({ title: config.title ?? '', description: config.description ?? '' });
@@ -409,7 +394,8 @@ function AccountPage({ accountId }) {
     // undefined = no event context / not resolvable; { response } once known.
     const [eventRsvp, setEventRsvp] = useState(undefined);
     const [eventAdmin, setEventAdmin] = useState(false); // do *I* admin this event?
-    const mine = claims()?.sub === accountId;
+    const session = useSession();
+    const mine = session.accountId === accountId;
     const eventId = new URLSearchParams(window.location.search).get('event');
 
     const loadAccount = () => api(`/accounts/${accountId}`)
@@ -444,7 +430,7 @@ function AccountPage({ accountId }) {
 
     // Grant affordances: never on your own profile. Full admin needs `**` (i.e.
     // a global admin); event admin needs to admin *this* event.
-    const adminControls = !mine && (isAdmin() || (eventId && eventAdmin)) ? (
+    const adminControls = !mine && (session.isAdmin || (eventId && eventAdmin)) ? (
         <div style={{ marginTop: '2rem' }}>
             <hr />
             <h2 style={dim}>Admin</h2>
@@ -452,7 +438,7 @@ function AccountPage({ accountId }) {
                 <GrantRow label="Event admin" path={`/events/${eventId}/admin`}
                     accountId={accountId} grants={grants} onChange={loadAccount} />
             )}
-            {isAdmin() && (
+            {session.isAdmin && (
                 <GrantRow label="Full admin (**)" path="**"
                     accountId={accountId} grants={grants} onChange={loadAccount} />
             )}
@@ -507,8 +493,8 @@ function AccountPage({ accountId }) {
 }
 
 function LogoutModal({ onClose }) {
-    const logout = () => {
-        localStorage.removeItem('velvet.accessToken');
+    const logout = async () => {
+        await api('/session', { method: 'DELETE' });   // clears the cookie server-side
         window.location.href = '/';
     };
     return (
@@ -537,7 +523,7 @@ function ProfileMenu() {
         return () => document.removeEventListener('click', onDoc);
     }, [open]);
 
-    const me = claims();
+    const me = useSession();
     if (!me) return null; // only offer a profile when signed in
 
     return (
@@ -550,7 +536,7 @@ function ProfileMenu() {
             </button>
             {open && (
                 <div style={menu} role="menu">
-                    <a style={menuItem} role="menuitem" href={`/accounts/${me.sub}`}>
+                    <a style={menuItem} role="menuitem" href={`/accounts/${me.accountId}`}>
                         Edit profile
                     </a>
                     <button style={menuItem} role="menuitem"
@@ -564,24 +550,24 @@ function ProfileMenu() {
     );
 }
 
-// The invite landing page (`/invites/?t=<token>`). Redeems the token for a
-// non-admin JWT, stashes it as our access token, then forwards to the invite's
-// configured entrypoint. Using replace() keeps the secret token out of history.
+// The invite landing page (`/invites/?t=<token>`). Trades the token via the BFF
+// (`/session/invite`), which sets the session cookie server-side, then forwards
+// to the invite's entrypoint. Using replace() keeps the token out of history,
+// and no JWT ever reaches JS.
 function RedeemInvite() {
     const [error, setError] = useState(null);
     useEffect(() => {
         const token = new URLSearchParams(window.location.search).get('t');
         if (!token) { setError('This invite link is missing its token.'); return; }
-        api('/invites/redeem', {
+        api('/session/invite', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ token })
         }).then((r) => {
-            if (!r || !r.access_token) {
+            if (!r || r.error) {
                 setError('This invite is invalid or has already been used.');
                 return;
             }
-            localStorage.setItem('velvet.accessToken', r.access_token);
             window.location.replace(r.entrypoint || '/');
         }).catch(() => setError('Something went wrong redeeming this invite.'));
     }, []);
@@ -610,22 +596,38 @@ function NotLoggedIn() {
     );
 }
 
-export default function App() {
-    // Tiny path router: /invites/ → redeem landing; /events/:id → detail;
-    // everything else → the list.
-    const path = window.location.pathname;
-    // The invite landing page *is* how you log in — never gate it.
-    if (/^\/invites\/?$/.test(path)) return <RedeemInvite />;
-    // Every other route needs a live session; short-circuit if there isn't one.
-    if (!loggedIn()) return <NotLoggedIn />;
+// Signed-in routes, gated on the session resolved from GET /session. The invite
+// landing page is handled by <App> before this (it *is* how you log in).
+function Shell({ path }) {
+    // undefined = still asking the server; null = logged out; object = identity.
+    const [session, setSession] = useState(undefined);
+    useEffect(() => {
+        api('/session')
+            .then((s) => setSession(s && !s.error ? s : null))
+            .catch(() => setSession(null));
+    }, []);
+
+    if (session === undefined) {
+        return <main style={wrap}><p>Loading…</p></main>;
+    }
+    if (!session) return <NotLoggedIn />;
+
     const account = path.match(/^\/accounts\/([^/]+)$/);
     const event = path.match(/^\/events\/([^/]+)$/);
     return (
-        <>
+        <SessionContext.Provider value={session}>
             <ProfileMenu />
             {account ? <AccountPage accountId={account[1]} />
                 : event ? <EventDetail id={event[1]} />
                 : <EventList />}
-        </>
+        </SessionContext.Provider>
     );
+}
+
+export default function App() {
+    // Tiny path router: /invites/ → redeem landing (ungated); everything else is
+    // a signed-in route rendered by <Shell> once the session resolves.
+    const path = window.location.pathname;
+    if (/^\/invites\/?$/.test(path)) return <RedeemInvite />;
+    return <Shell path={path} />;
 }

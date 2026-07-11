@@ -1,6 +1,7 @@
 import pathLib from 'path';
 import { fileURLToPath } from 'url';
 import Fastify from 'fastify';
+import cookie from '@fastify/cookie';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 
@@ -35,6 +36,11 @@ export async function startServer({ actions, close, redeemInvite, makeContext },
         return payload;
     });
 
+    // Cookie parsing (request.cookies) + setting (reply.setCookie). The BFF
+    // session cookie (auth.mjs) is the browser's only credential; no signing
+    // secret needed — its value is a self-authenticating JWT.
+    await fastify.register(cookie);
+
     const publicUrl = process.env.VELVET_PUBLIC_URL ?? `http://localhost:${port}`;
     const authEnabled = process.env.VELVET_AUTH !== 'off';
 
@@ -46,7 +52,7 @@ export async function startServer({ actions, close, redeemInvite, makeContext },
     });
     await fastify.register(swaggerUi, { routePrefix: '/docs' });
 
-    let guard, authenticate, challenge, closeAuth;
+    let guard, authenticate, challenge, csrfGuard, closeAuth;
     let ctxFor = makeContext;
     if (authEnabled) {
         const auth = await registerAuth(fastify,
@@ -54,6 +60,7 @@ export async function startServer({ actions, close, redeemInvite, makeContext },
         guard = auth.requireAuth;
         authenticate = auth.authenticate;
         challenge = auth.challenge;
+        csrfGuard = auth.csrfGuard;
         closeAuth = auth.close;
     }
     else {
@@ -64,7 +71,7 @@ export async function startServer({ actions, close, redeemInvite, makeContext },
     }
 
     registerRest(fastify, actions,
-            { authenticate, challenge, makeContext: ctxFor });
+            { authenticate, challenge, csrfGuard, makeContext: ctxFor });
     registerMcp(fastify, actions,
             { path: '/mcp', onRequest: guard, makeContext: ctxFor });
 

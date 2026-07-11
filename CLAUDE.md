@@ -161,6 +161,44 @@ Non-admin auth: `POST /invites/redeem {token}` trades an invite token for a
 (`sub` = account id). Same signing key. REST-only (CLI/MCP are admin
 interfaces). Refresh preserves roles — no elevation.
 
+### Browser sessions (BFF)
+
+The SPA never handles a JWT. A **backend-for-frontend** surface lives in
+`auth.mjs` — the server *is* its own BFF, since it already serves the SPA and API
+same-origin. Two distinct auth surfaces:
+- **API auth (Bearer)** — `/bootstrap/redeem`, `/invites/redeem`, `/oauth/token`
+  return the JWT in the body. For CLI, CI, scripts, native, MCP. **The browser
+  never calls these**, so the token can't land in a JS-reachable response.
+- **BFF auth (cookie)** — `/session/*`, the browser's *only* auth door. Same core
+  (`redeemCode`/`redeemInvite` → `issueTokens`), but the access token leaves as
+  an **HttpOnly `velvet_session` cookie** (`SameSite=Lax`, `Path=/`, `Secure`
+  under https, `Max-Age`=access TTL) instead of a body:
+  - `POST /session/bootstrap {code}` → admin cookie (the `/admin` page).
+  - `POST /session/invite {token}` → non-admin cookie; returns only `{entrypoint}`.
+  - `GET /session` → `{ accountId, isAdmin }` (or 401) — the SPA's replacement for
+    decoding the JWT client-side.
+  - `DELETE /session` → clears the cookie (logout).
+
+`authenticate(request, { cookie })` reads Bearer always, and the cookie **only
+when `cookie:true`** — `rest.mjs` opts in (the SPA's data surface), but **`/mcp`
+stays Bearer-only** (a cookie there would be a CSRF vector, and MCP clients aren't
+browsers).
+
+**CSRF: HMAC double-submit.** Beyond `SameSite=Lax`, cookie-authenticated *writes*
+must carry `X-CSRF-Token`. The token is `HMAC(sub)` under a subkey derived from
+the signing key (domain-separated), delivered to JS in a readable (non-HttpOnly)
+`velvet_csrf` cookie set at login and refreshed on every `GET /session`. `api()`
+echoes it into the header on non-GET; `csrfGuard` (an `onRequest` step `rest.mjs`
+chains *after* `attachAuth`) verifies `header == HMAC(request.auth.sub)`. It
+**skips** safe methods, Bearer callers (CLI/tools — no ambient cookie), and
+requests with no session cookie — so only browser cookie-writes are gated. A
+cross-site forgery carries the session cookie automatically but can't read the
+token nor set the header (CORS preflight), so it 403s. The `/session/*` routes
+themselves are raw (not through `csrfGuard`); logout is `DELETE` (preflighted,
+so naturally CSRF-safe). No refresh flow yet — when the cookie's JWT expires you
+re-log; the issued refresh token is the obvious next step (the BFF can rotate it
+server-side, invisibly).
+
 ### Permissions
 
 A **permission** is a slash path (`/events/evt_123/view`). A **grant** is a glob
@@ -229,9 +267,9 @@ cache replays a `fetch`'s cached JSON for a later navigation to the same URL (or
 vice-versa), which surfaced as a back-navigation rendering raw event JSON.
 
 `GET /admin` (in `auth.mjs`) is a standalone helper page (not an API door) that
-drives the bootstrap flow — request a code (printed to the terminal), redeem it,
-stash the admin JWT in `localStorage` (`velvet.accessToken`). The SPA reads that
-token and sends it as a Bearer; the startup banner points the operator there.
+drives the bootstrap flow — request a code (printed to the terminal), then redeem
+it via the BFF `POST /session/bootstrap`, which sets the HttpOnly session cookie.
+No token touches page JS. The startup banner points the operator there.
 
 **Client routes & behaviors** (`src/App.jsx`, one tiny path router — RESTful URLs
 double as client routes via the negotiation above):
@@ -244,16 +282,20 @@ double as client routes via the negotiation above):
   relative to that event — the account's RSVP status line plus, for an admin of
   that event, a grant/revoke control (event admin, and full `**` for global
   admins).
-- `/invites/?t=<token>` → the redeem landing: POSTs the token to
-  `/invites/redeem`, stashes the returned JWT, and forwards to the invite's
-  `entrypoint` (via `location.replace`, keeping the secret out of history).
+- `/invites/?t=<token>` → the redeem landing: POSTs the token to the BFF
+  `/session/invite` (sets the cookie server-side, returns only `{entrypoint}`) and
+  forwards there via `location.replace` (keeping the token out of history).
 - A 👤 profile menu (Edit profile / Log out, the latter warning you'll need to be
-  re-invited) sits top-right on signed-in pages.
-- Every permissioned route short-circuits to a **"You are not logged in"** page
-  when there's no live token — checked client-side via the JWT `exp` claim.
-  **The SPA stores only the access token and has no refresh flow yet**, so when it
-  expires you're effectively logged out (re-log at `/admin`); wiring the issued
-  refresh token through `api()` is the obvious follow-up.
+  re-invited and calling `DELETE /session`) sits top-right on signed-in pages.
+- **No JWT ever lives in JS.** `api()` just fetches same-origin — the browser
+  attaches the HttpOnly session cookie automatically; on writes it also echoes the
+  readable `velvet_csrf` cookie into `X-CSRF-Token` (see CSRF above). Identity
+  comes from `GET /session`
+  (not a client-side token decode): `<App>` resolves it once into a
+  `SessionContext` (`useSession()`); `undefined`=loading, `null`=logged out →
+  **"You are not logged in"** page, object=`{ accountId, isAdmin }`. When the
+  cookie's JWT expires, `/session` 401s → the same page (re-log at `/admin`);
+  refresh is still the obvious follow-up (now server-side, via the BFF).
 
 `velvet --dev` (`dev.mjs`) runs both halves hot-reloading: the backend (env
 `VELVET_DEV=1` → it skips serving assets) plus the Vite dev server (React HMR)
