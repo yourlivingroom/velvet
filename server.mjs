@@ -20,6 +20,21 @@ export async function startServer({ actions, close, redeemInvite, makeContext },
 } = {}) {
     const fastify = Fastify({ logger: true });
 
+    // Shared URLs are content-negotiated on `Accept` — the SPA shell and the
+    // JSON API live at the same paths (see spa.mjs). Advertise that to caches so
+    // a fetch's cached JSON is never replayed for a browser navigation to the
+    // same URL (which showed the raw event JSON on a back-navigation). Added
+    // before the routes so it covers every response. Registered first so it runs
+    // for all routes regardless of their own registration order.
+    fastify.addHook('onSend', async (req, reply, payload) => {
+        const existing = reply.getHeader('vary');
+        if (!existing) reply.header('vary', 'Accept');
+        else if (!/(^|,\s*)accept(\s*,|$)/i.test(existing)) {
+            reply.header('vary', `${existing}, Accept`);
+        }
+        return payload;
+    });
+
     const publicUrl = process.env.VELVET_PUBLIC_URL ?? `http://localhost:${port}`;
     const authEnabled = process.env.VELVET_AUTH !== 'off';
 

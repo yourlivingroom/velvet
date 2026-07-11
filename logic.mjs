@@ -153,14 +153,18 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
     // event — both hidden). Throws ClientError (403/400) for a caller trying to
     // touch someone else's reservation without admin, or with no account at all.
     async function reservationTarget(eventId, inputAccountId, ctx) {
-        if (!ctx.can(`/events/${eventId}/join`)) return null;   // 404: hide
+        // Admin over this event (globally or event-scoped) may act on anyone's
+        // reservation; a plain /join holder only on their own.
+        const eventAdmin = ctx.can('/server/admin')
+                || ctx.can(`/events/${eventId}/admin`);
+        if (!eventAdmin && !ctx.can(`/events/${eventId}/join`)) return null; // hide
 
         const acctId = inputAccountId ?? ctx.auth?.sub;
         if (!acctId) {
             throw new ClientError(
                     'No account in context; specify accountId.', 400);
         }
-        if (acctId !== ctx.auth?.sub && !ctx.can('/server/admin')) {
+        if (acctId !== ctx.auth?.sub && !eventAdmin) {
             throw new ClientError('Forbidden: not your reservation.', 403);
         }
         if (await eventCol.getDoc(eventId) === null) return null;   // 404
@@ -246,8 +250,10 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                     + 'bearer credential — put it in the link you send. The `id` '
                     + '(nvt_…) is a non-secret handle for management. Redeeming '
                     + 'the token (POST /invites/redeem) yields a non-admin JWT '
-                    + 'for an account auto-created on first redemption.',
-            requires: '/server/admin',
+                    + 'for an account auto-created on first redemption. A global '
+                    + 'admin may confer any grants; an event admin may mint '
+                    + 'invites conferring only permissions within an event they '
+                    + 'administer (so they can invite people to their own event).',
             http: { method: 'POST', path: '/invites' },
             input: {
                 type: 'object',
@@ -284,12 +290,31 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
             },
             // awaitIndex: an invite must be findable by its token the instant
             // create returns, so redemption never races the index.
-            handler: ({ email, note, grants, entrypoint, name }) =>
-                    inviteCol.createDoc({
-                        token: crypto.randomBytes(24).toString('hex'), // 192-bit
-                        ...stripUndefined(
-                                { email, note, grants, entrypoint, name })
-                    }, { awaitIndex: true })
+            handler: ({ email, note, grants, entrypoint, name }, ctx) => {
+                // Authorize by what's conferred. A global admin confers anything;
+                // anyone else may only mint an invite whose every grant falls
+                // under an event they administer (never a bare or global-scoped
+                // invite) — so an event admin can invite to their own event, but
+                // no one can escalate beyond what they hold.
+                if (!ctx.can('/server/admin')) {
+                    const list = grants ?? [];
+                    if (list.length === 0) {
+                        throw new ClientError(
+                                'Forbidden: only an admin may create an invite.', 403);
+                    }
+                    for (const g of list) {
+                        const m = /^\/events\/([^/]+)\//.exec(g);
+                        if (!m || !ctx.can(`/events/${m[1]}/admin`)) {
+                            throw new ClientError(
+                                    `Forbidden: cannot confer ${g}.`, 403);
+                        }
+                    }
+                }
+                return inviteCol.createDoc({
+                    token: crypto.randomBytes(24).toString('hex'), // 192-bit
+                    ...stripUndefined({ email, note, grants, entrypoint, name })
+                }, { awaitIndex: true });
+            }
         },
 
         'invites.get': {
@@ -384,7 +409,9 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
             summary: 'Fetch an event — graded by permission.',
             description: 'Admins (/events/:id/admin) get the full doc + guest '
                     + 'list; participants (/view or /join) get the user view '
-                    + '(id, config, guestList); anyone else 404s (hidden).',
+                    + '(id, config, guestList); anyone else 404s (hidden). Both '
+                    + 'views carry an `access` block ({ admin, join }) so a '
+                    + 'client can offer only the actions the viewer may take.',
             http: { method: 'GET', path: '/events/:eventId' },
             input: {
                 type: 'object',
@@ -395,13 +422,13 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                 }
             },
             handler: async ({ eventId }, ctx) => {
-                const { admin, participant } = eventAccess(eventId, ctx);
-                if (!participant) return null;          // 404: hide existence
+                const access = eventAccess(eventId, ctx);
+                if (!access.participant) return null;   // 404: hide existence
 
                 const event = await eventCol.getDoc(eventId);
                 if (event === null) return null;
                 const guestList = (await guestListsByEvent()).get(eventId) ?? [];
-                return projectEvent(event, guestList, admin);
+                return projectEvent(event, guestList, access);
             }
         },
 
@@ -417,9 +444,9 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                 ]);
                 const out = [];
                 for (const e of events) {
-                    const { admin, participant } = eventAccess(e.id, ctx);
-                    if (!participant) continue;
-                    out.push(projectEvent(e, lists.get(e.id) ?? [], admin));
+                    const access = eventAccess(e.id, ctx);
+                    if (!access.participant) continue;
+                    out.push(projectEvent(e, lists.get(e.id) ?? [], access));
                 }
                 return out;
             }
@@ -427,7 +454,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
 
         'events.delete': {
             summary: 'Delete an event.',
-            requires: '/server/admin',
+            // Event-scoped admin gate (in-handler; see events.patch).
             http: { method: 'DELETE', path: '/events/:eventId' },
             input: {
                 type: 'object',
@@ -437,7 +464,10 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                     eventId: { type: 'string', description: 'Event id (evt_…).' }
                 }
             },
-            handler: ({ eventId }) => eventCol.deleteDoc(eventId)
+            handler: ({ eventId }, ctx) => {
+                ctx.assertPermission(`/events/${eventId}/admin`);
+                return eventCol.deleteDoc(eventId);
+            }
         },
 
         'events.patch': {
@@ -447,7 +477,9 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                     + 'relative to the config root; our metadata is not '
                     + 'reachable. Returns the updated event, or null if no such '
                     + 'event.',
-            requires: '/server/admin',
+            // Event-scoped admin gate: enforced in-handler (the permission is
+            // per-event, so it can't be a static `requires`). Global `**` and a
+            // /events/:id/admin grant both pass; nothing else does.
             // `patch` is this action's *payload* — a single top-level value,
             // not one named field among several. Each interface renders that
             // naturally: REST puts it in the request body (as the mediaType
@@ -485,7 +517,8 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                     }
                 }
             },
-            handler: async ({ eventId, patch }) => {
+            handler: async ({ eventId, patch }, ctx) => {
+                ctx.assertPermission(`/events/${eventId}/admin`);
                 let found = true;
                 const { newValue } = await events.edit(`${eventId}.json`,
                         (draft) => {
@@ -514,7 +547,12 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
 
         // Owner-or-admin: you can read/edit your own account; admin, any.
         'accounts.get': {
-            summary: 'Fetch an account (your own, or any with admin).',
+            summary: 'Fetch an account — full for owner/admin, public view else.',
+            description: 'Owner or admin get the full account; any other '
+                    + 'signed-in caller gets a whitelisted public view '
+                    + '({ id, name }) — names are already visible via guest '
+                    + 'lists, but grants and bindings never leak. Anonymous '
+                    + 'callers (and unknown ids) → 404.',
             http: { method: 'GET', path: '/accounts/:accountId' },
             input: {
                 type: 'object',
@@ -524,9 +562,13 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                     accountId: { type: 'string', description: 'Account id (acct_…).' }
                 }
             },
-            handler: ({ accountId }, ctx) =>
-                    ownAccountOrAdmin(accountId, ctx)
-                            ? accountCol.getDoc(accountId) : null
+            handler: async ({ accountId }, ctx) => {
+                const account = await accountCol.getDoc(accountId);
+                if (!account) return null;                       // 404
+                if (ownAccountOrAdmin(accountId, ctx)) return account;
+                if (!ctx.auth?.sub) return null;                 // must be signed in
+                return { id: account.id, name: account.name };   // public view
+            }
         },
 
         'accounts.update': {
@@ -550,6 +592,80 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                             if (name !== undefined) draft.name = name;
                         });
                 return newValue ?? null;
+            }
+        },
+
+        'accounts.grant': {
+            summary: 'Grant a permission to an account.',
+            description: 'Adds a grant (a permission glob) to the account. You '
+                    + 'may confer only a permission you yourself hold — a '
+                    + 'super-admin (`**`) can grant anything, an event admin '
+                    + '(`/events/:id/admin`) can grant that event\'s admin but '
+                    + 'no global power. Idempotent. Takes effect on the '
+                    + "account's next request (grants aren't baked into a JWT). "
+                    + 'Returns the account (grants included only for owner/admin).',
+            http: { method: 'POST', path: '/accounts/:accountId/grants' },
+            input: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['accountId', 'grant'],
+                properties: {
+                    accountId: { type: 'string', description: 'Account id (acct_…).' },
+                    grant: {
+                        type: 'string',
+                        minLength: 1,
+                        description: 'Permission glob to grant, e.g. '
+                                + '"/events/evt_1/admin" or "**".'
+                    }
+                }
+            },
+            handler: async ({ accountId, grant }, ctx) => {
+                ctx.assertPermission(grant);        // confer only what you hold
+                const account = await accountCol.getDoc(accountId);
+                if (!account) return null;          // 404
+                const { newValue } = await accounts.edit(
+                        `${accountId}.json`, (draft) => {
+                            if (!draft) return;
+                            if (!(draft.grants ?? []).includes(grant)) {
+                                draft.grants = [...(draft.grants ?? []), grant];
+                            }
+                        });
+                return ownAccountOrAdmin(accountId, ctx)
+                        ? newValue : { id: newValue.id, name: newValue.name };
+            }
+        },
+
+        'accounts.revoke': {
+            summary: 'Revoke a permission from an account.',
+            description: 'Removes a grant from the account. Same authority rule '
+                    + 'as accounts.grant: you may revoke only a permission you '
+                    + 'yourself hold. Idempotent.',
+            http: { method: 'DELETE', path: '/accounts/:accountId/grants' },
+            input: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['accountId', 'grant'],
+                properties: {
+                    accountId: { type: 'string', description: 'Account id (acct_…).' },
+                    grant: {
+                        type: 'string',
+                        minLength: 1,
+                        description: 'Permission glob to revoke.'
+                    }
+                }
+            },
+            handler: async ({ accountId, grant }, ctx) => {
+                ctx.assertPermission(grant);        // symmetric with grant
+                const account = await accountCol.getDoc(accountId);
+                if (!account) return null;          // 404
+                const { newValue } = await accounts.edit(
+                        `${accountId}.json`, (draft) => {
+                            if (!draft) return;
+                            draft.grants = (draft.grants ?? [])
+                                    .filter((g) => g !== grant);
+                        });
+                return ownAccountOrAdmin(accountId, ctx)
+                        ? newValue : { id: newValue.id, name: newValue.name };
             }
         },
 
@@ -688,22 +804,24 @@ function withoutToken({ token, ...rest }) {
 }
 
 // How a caller may see an event: `admin` (full doc) if they hold its /admin
-// permission; `participant` (user view) if they hold /admin, /view, or /join.
-// (An admin's `**` matches /admin for every event.)
+// permission; `join` (may RSVP) if they hold /join; `participant` (user view)
+// if they hold /admin, /view, or /join. (An admin's `**` matches every one.)
 function eventAccess(eventId, ctx) {
     const admin = ctx.can(`/events/${eventId}/admin`);
+    const join = ctx.can(`/events/${eventId}/join`);
     return {
         admin,
-        participant: admin
-                || ctx.can(`/events/${eventId}/view`)
-                || ctx.can(`/events/${eventId}/join`)
+        join,
+        participant: admin || join || ctx.can(`/events/${eventId}/view`)
     };
 }
 
 // Admins see our metadata; participants a whitelisted user view (so new
-// admin-only fields never leak by default). Both get the guest list.
-function projectEvent(event, guestList, admin) {
-    return admin
+// admin-only fields never leak by default). Both get the guest list, plus an
+// `access` block telling the viewer what they may do (e.g. drive the RSVP UI).
+function projectEvent(event, guestList, access) {
+    const view = access.admin
             ? { ...event, guestList }
             : { id: event.id, config: event.config, guestList };
+    return { ...view, access: { admin: access.admin, join: access.join } };
 }

@@ -1,9 +1,10 @@
 # velvet
 
-A self-hosted event-management server. Status: **API only**. Admin auth *and*
-non-admin accounts (via invite tokens) both work; `events` and
-`invites`/`accounts` are real, `sessions` still a stand-in. Not yet wired to a
-real claude.ai connection.
+A self-hosted event-management server with a **React SPA** front-end (profiles,
+RSVPs, invites, per-event admin) over the same URLs as the API. Admin auth *and*
+non-admin accounts (via invite tokens) both work; `events`, `invites`,
+`accounts`, and `reservations` are real, `sessions` still a stand-in. Not yet
+wired to a real claude.ai connection.
 
 ## The one idea
 
@@ -71,10 +72,15 @@ one both positionally *and* by flag is an error. No other file needs editing.
 - `events` — stored doc separates **our** metadata (top-level `id` = `evt_…`,
   `createdAt`) from the **user's** `config` (arbitrary JSON). Only `config` is
   user-editable, via JSON Patch (RFC 6902) at `PATCH /events/:eventId/config`
-  (`events.patch`, whose `payload` is the ops array). `GET /events/:eventId` is
+  (`events.patch`, whose `payload` is the ops array). Config edits and
+  `events.delete` are gated **in-handler** on `/events/:id/admin` (event-scoped,
+  so not a static `requires` — `ctx.assertPermission`), which `**` satisfies for
+  every event. So "event admin" is a real role, not just a richer read. `GET /events/:eventId` is
   **graded**: admins (`/events/:id/admin`) get the full doc; participants
   (`/view` *or* `/join`) get a whitelisted user view (`id`, `config`,
-  `guestList`); anyone else → 404 (hide). `GET /events` (`events.list`) is
+  `guestList`); anyone else → 404 (hide). Both views also carry an **`access`**
+  block (`{ admin, join }`) so a client offers only the actions the viewer may
+  take (e.g. the SPA's RSVP strip appears iff `access.join`). `GET /events` (`events.list`) is
   **"my events"** — no admin gate; it returns only the events you participate in
   (via `/view`/`/join`/`/admin`), each graded the same way (admins get all).
   `eventAccess()` + `projectEvent()` are shared by both so an event appears in
@@ -86,9 +92,15 @@ one both positionally *and* by flag is an error. No other file needs editing.
 - `reservations` — an account's RSVP to an event, one per (event, account),
   keyed `<eventId>~<accountId>`. `PUT/GET/DELETE /events/:eventId/reservation`
   gated (in-handler) on `/events/:id/join`; `accountId` defaults to the caller,
-  another account requires admin. Fields: `response` (going/maybe/not-going),
+  another account requires admin over that event (`/server/admin` *or*
+  `/events/:id/admin`). Fields: `response` (going/maybe/not-going),
   `guests` (array of possibly-empty names).
-- `invites` — an invite **is a token**. `invites.create` (admin) mints one; its
+- `invites` — an invite **is a token**. `invites.create` mints one, authorized
+  by *what it confers*: a global admin may confer any `grants`; anyone else may
+  only mint an invite whose every grant falls under an event they administer
+  (`/events/:id/admin`) — so an event admin can invite people to their own event
+  (the SPA's "Admin actions" → Create invite), but no bare or global-scoped
+  invite, and no escalation. Its
   `id` (`nvt_…`) is a non-secret handle, its `token` field is the secret you put
   in a link, its `grants` are the permissions redemption confers, an optional
   `entrypoint` (same-origin relative path) is echoed back at redeem as where to
@@ -99,10 +111,22 @@ one both positionally *and* by flag is an error. No other file needs editing.
   byToken index, not a read). Redeeming binds an **account**.
 - `accounts` — non-admin identities, auto-created (and bound to the invite) on
   first redemption, carrying the invite's `grants` and `name`; a JWT's `sub` is
-  an account id. `accounts.get`/`update` (`PATCH /accounts/:accountId`) are
-  **owner-or-admin** (`ownAccountOrAdmin` helper); `update` sets only `name`
-  (never grants — no self-escalation). The guest list's `name` is sourced from
-  the account, so editing your name updates it everywhere. `sessions` — still a
+  an account id. `accounts.update` (`PATCH /accounts/:accountId`) is
+  **owner-or-admin** (`ownAccountOrAdmin` helper) and sets only `name` (never
+  grants — no self-escalation). `accounts.get` is **graded**: owner/admin get
+  the full doc, any other signed-in caller a whitelisted public view
+  (`{ id, name }` — names already show in guest lists, but grants/bindings never
+  leak), anonymous callers 404. The guest list's `name` is sourced from the
+  account, so editing your name updates it everywhere; guest names link to
+  `/accounts/:id` (read-only unless it's you), and `?event=` renders that page
+  relative to the event (RSVP line + an event-admin grant control).
+  `accounts.grant`/`revoke` (`POST`/`DELETE /accounts/:accountId/grants`,
+  field `grant`) add/remove one permission glob on an account, under a
+  **confer-only-what-you-hold** rule (`ctx.assertPermission(grant)`): a `**`
+  holder grants anything, an event admin only that event's `/admin`. Idempotent,
+  and effective on the target's next request (grants resolve per-request, never
+  frozen into a JWT). Kept off `accounts.update` to preserve its no-escalation
+  invariant. `sessions` — still a
   placeholder stand-in.
 
 ## Auth model
@@ -163,8 +187,11 @@ Two enforcement styles:
 admin auth → `**`). "Admin" isn't a magic boolean — it's just holding `**`
 (bootstrap JWTs and the CLI resolve to it; redeemed invites don't). So `requires`
 is an ordinary permission — you could grant `/server/admin` without `**`, or make
-a `requires` event-scoped, with no new machinery. Per-identity admins + external
-trusted issuers remain deferred.
+a gate event-scoped, with no new machinery. **Per-identity event admins now
+exist**: `accounts.grant` confers `/events/:id/admin` to an account, and the
+event write actions enforce it in-handler (see Domain). Granting is itself
+permission-checked (confer only what you hold), so an event admin can delegate
+their event but not mint global admins. External trusted issuers remain deferred.
 
 **Gotcha:** never let an immer draft (or a sub-object of one) escape an `edit()`
 updater — immer revokes it on return, and touching it later throws "proxy that
@@ -196,19 +223,57 @@ fetch (`Accept: application/json`, or `*/*`) falls through to the JSON handler.
 Plain `fetch` already gets JSON (default `Accept: */*`); only navigations get the
 shell. Infra paths (`/mcp`, `/oauth`, `/bootstrap`, `/.well-known`, `/docs`,
 `/admin`, `/assets`) are excluded (`NON_SPA`). No client build → API-only.
+Because these URLs are negotiated on `Accept`, **every response carries
+`Vary: Accept`** (a global `onSend` hook in `server.mjs`) — else a browser's HTTP
+cache replays a `fetch`'s cached JSON for a later navigation to the same URL (or
+vice-versa), which surfaced as a back-navigation rendering raw event JSON.
 
 `GET /admin` (in `auth.mjs`) is a standalone helper page (not an API door) that
 drives the bootstrap flow — request a code (printed to the terminal), redeem it,
 stash the admin JWT in `localStorage` (`velvet.accessToken`). The SPA reads that
 token and sends it as a Bearer; the startup banner points the operator there.
 
-`velvet --dev` (`dev.mjs`) runs both halves hot-reloading: the backend under
-`node --watch` (env `VELVET_DEV=1` → it skips serving assets), and the Vite dev
-server (React HMR) which proxies API/infra to the backend
-(`client/vite.config.js`, mirroring the same-URL negotiation). Dev mirrors prod
-— same relative URLs — so nothing in the client changes between the two. The
-backend runs in the **invocation cwd** (so `data/` resolves like the plain
-server).
+**Client routes & behaviors** (`src/App.jsx`, one tiny path router — RESTful URLs
+double as client routes via the negotiation above):
+- `/` or `/events` → your events list; `/events/:eventId` → event detail: the
+  graded view, a config-edit pencil **and** an "Admin actions" accordion (Create
+  invite) both gated on `access.admin` (so event admins see them), an RSVP strip
+  gated on `access.join`, and a guest list whose names link to profiles.
+- `/accounts/:accountId` → profile page: editable only for your own account
+  (peers get a read-only `{ id, name }` view); `?event=<eventId>` renders it
+  relative to that event — the account's RSVP status line plus, for an admin of
+  that event, a grant/revoke control (event admin, and full `**` for global
+  admins).
+- `/invites/?t=<token>` → the redeem landing: POSTs the token to
+  `/invites/redeem`, stashes the returned JWT, and forwards to the invite's
+  `entrypoint` (via `location.replace`, keeping the secret out of history).
+- A 👤 profile menu (Edit profile / Log out, the latter warning you'll need to be
+  re-invited) sits top-right on signed-in pages.
+- Every permissioned route short-circuits to a **"You are not logged in"** page
+  when there's no live token — checked client-side via the JWT `exp` claim.
+  **The SPA stores only the access token and has no refresh flow yet**, so when it
+  expires you're effectively logged out (re-log at `/admin`); wiring the issued
+  refresh token through `api()` is the obvious follow-up.
+
+`velvet --dev` (`dev.mjs`) runs both halves hot-reloading: the backend (env
+`VELVET_DEV=1` → it skips serving assets) plus the Vite dev server (React HMR)
+which proxies API/infra to the backend (`client/vite.config.js`, mirroring the
+same-URL negotiation). Dev mirrors prod — same relative URLs — so nothing in the
+client changes between the two. The backend runs in the **invocation cwd** (so
+`data/` resolves like the plain server).
+
+**Backend reload is home-grown, not `node --watch`.** `node --watch` watches
+file *inodes*, which go stale after an atomic save (temp-file + rename swaps the
+inode), so it reloads once then silently stops — leaving a stale backend on
+:3000. Instead `dev.mjs` watches the velvet source *directory* (all backend
+`.mjs` live at the package root, so a non-recursive watch suffices and never
+touches `node_modules`) and restarts the child itself: SIGTERM → **await exit**
+→ respawn. The `file:../` sibling deps aren't watched — hard-restart when they
+change. The non-overlap is deliberate — the
+outgoing process must free the port and cardcatalog's exclusive LevelDB lock
+before the next boots, or the reload wedges. Debounced (~120ms) to coalesce the
+multiple raw events an atomic save emits; a 4s SIGKILL safety net covers a stuck
+process.
 
 ## Gotchas
 
