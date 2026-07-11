@@ -196,7 +196,11 @@ export async function registerAuth(fastify,
                 if (!result) {
                     return reply.code(401).send({ error: 'invalid_token' });
                 }
-                return issueTokens(result.accountId, []);   // non-admin
+                // Tokens + the invite's suggested starting path (if any).
+                return {
+                    ...await issueTokens(result.accountId, []),   // non-admin
+                    entrypoint: result.entrypoint
+                };
             });
 
     // ---- Resource Server ---------------------------------------------------

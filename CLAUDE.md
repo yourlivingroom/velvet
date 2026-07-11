@@ -70,11 +70,19 @@ one both positionally *and* by flag is an error. No other file needs editing.
   (`events.patch`, whose `payload` is the ops array). `GET /events/:eventId/config`
   (the user view) needs the `/events/:id/view` permission; `GET /events/:eventId`
   (full doc) needs `/events/:id/admin`. Unpermitted → 404 (quiet-hide).
+- `reservations` — an account's RSVP to an event, one per (event, account),
+  keyed `<eventId>~<accountId>`. `PUT/GET/DELETE /events/:eventId/reservation`
+  gated (in-handler) on `/events/:id/join`; `accountId` defaults to the caller,
+  another account requires admin. Fields: `response` (going/maybe/not-going),
+  `guests` (array of possibly-empty names).
 - `invites` — an invite **is a token**. `invites.create` (admin) mints one; its
   `id` (`nvt_…`) is a non-secret handle, its `token` field is the secret you put
-  in a link, and its `grants` are the permissions redemption confers. `token`/`id`
-  are separate so future expiry/single-use lives on the token without touching
-  account identity. Redeeming binds an **account**.
+  in a link, its `grants` are the permissions redemption confers, and an optional
+  `entrypoint` (same-origin relative path) is echoed back at redeem as where to
+  start. `token`/`id` are separate so future expiry/single-use lives on the token
+  without touching account identity. **The token is shown once, in the create
+  response** — `invites.get`/`list` are admin-only and omit it (redemption finds
+  it via the byToken index, not a read). Redeeming binds an **account**.
 - `accounts` — non-admin identities, auto-created (and bound to the invite) on
   first redemption, carrying the invite's `grants`; a JWT's `sub` is an account
   id. `sessions` — still a placeholder stand-in.

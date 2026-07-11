@@ -68,6 +68,13 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
         inline
     });
 
+    // Reservations: one RSVP per (event, account), keyed `<eventId>~<accountId>`.
+    const reservations = pulpDb({}, {
+        dataPath: `${rootPath}/reservations`,
+        indexPath: `${rootPath}/indexes/reservations`,
+        inline
+    });
+
     function collection(store, prefix) {
         return {
             async createDoc(extra, opts = {}) {
@@ -136,6 +143,26 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
         };
     }
 
+    // Resolve which (event, account) a reservation op targets, and authorize it.
+    // Returns { acctId, key } or null (→ 404: no join permission, or no such
+    // event — both hidden). Throws ClientError (403/400) for a caller trying to
+    // touch someone else's reservation without admin, or with no account at all.
+    async function reservationTarget(eventId, inputAccountId, ctx) {
+        if (!ctx.can(`/events/${eventId}/join`)) return null;   // 404: hide
+
+        const acctId = inputAccountId ?? ctx.auth?.sub;
+        if (!acctId) {
+            throw new ClientError(
+                    'No account in context; specify accountId.', 400);
+        }
+        if (acctId !== ctx.auth?.sub && !ctx.can('/server/admin')) {
+            throw new ClientError('Forbidden: not your reservation.', 403);
+        }
+        if (await eventCol.getDoc(eventId) === null) return null;   // 404
+
+        return { acctId, key: `${eventId}~${acctId}` };
+    }
+
     // Redeem an invite by its secret token, via the byToken index (materialized
     // on-demand — see INVITE_INDEXES). (future: reject here if expired or
     // already consumed / single-use.)
@@ -158,12 +185,14 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
         let boundId;
         let inviteId;
         let inviteGrants = [];
+        let entrypoint;
         await invites.edit(match.path, (draft) => {
             if (!draft) return;
             inviteId = draft.id;
-            // Snapshot a plain copy — draft.grants is an immer proxy that's
-            // revoked once edit() returns; we use it in the account write below.
+            // Snapshot plain copies — draft is an immer proxy revoked once
+            // edit() returns; we use these below. (entrypoint is a primitive.)
             inviteGrants = draft.grants ? [...draft.grants] : [];
+            entrypoint = draft.entrypoint;
             if (draft.accountId) { boundId = draft.accountId; return; }
             draft.accountId = newAccountId;
             boundId = newAccountId;
@@ -177,7 +206,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                 grants: inviteGrants   // what this account is permitted to do
             }));
         }
-        return { accountId: boundId };
+        return { accountId: boundId, entrypoint };
     }
 
     const actions = {
@@ -208,19 +237,28 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                         description: 'Permission grants (globs) conferred on the '
                                 + 'account when this invite is redeemed, e.g. '
                                 + '["/events/evt_123/view"].'
+                    },
+                    entrypoint: {
+                        type: 'string',
+                        pattern: '^/(?!/)',
+                        description: 'A same-origin relative path suggesting where '
+                                + 'the redeemer should start, e.g. '
+                                + '"/events/evt_123". Echoed back by redeem.'
                     }
                 }
             },
             // awaitIndex: an invite must be findable by its token the instant
             // create returns, so redemption never races the index.
-            handler: ({ email, note, grants }) => inviteCol.createDoc({
-                token: crypto.randomBytes(24).toString('hex'), // 192-bit secret
-                ...stripUndefined({ email, note, grants })
-            }, { awaitIndex: true })
+            handler: ({ email, note, grants, entrypoint }) =>
+                    inviteCol.createDoc({
+                        token: crypto.randomBytes(24).toString('hex'), // 192-bit
+                        ...stripUndefined({ email, note, grants, entrypoint })
+                    }, { awaitIndex: true })
         },
 
         'invites.get': {
-            summary: 'Fetch a single invite by id.',
+            summary: 'Fetch a single invite by id (secret token omitted).',
+            requires: '/server/admin',
             http: { method: 'GET', path: '/invites/:id' },
             input: {
                 type: 'object',
@@ -230,15 +268,19 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                     id: { type: 'string', description: 'Invite id.' }
                 }
             },
-            handler: ({ id }) => inviteCol.getDoc(id)
+            handler: async ({ id }) => {
+                const invite = await inviteCol.getDoc(id);
+                return invite && withoutToken(invite);
+            }
         },
 
         'invites.list': {
-            summary: 'List all invites.',
+            summary: 'List all invites (secret tokens omitted).',
             requires: '/server/admin',
             http: { method: 'GET', path: '/invites' },
             input: { type: 'object', additionalProperties: false, properties: {} },
-            handler: () => inviteCol.listDocs()
+            handler: async () =>
+                    (await inviteCol.listDocs()).map(withoutToken)
         },
 
         'sessions.create': {
@@ -457,6 +499,103 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
             http: { method: 'GET', path: '/accounts' },
             input: { type: 'object', additionalProperties: false, properties: {} },
             handler: () => accountCol.listDocs()
+        },
+
+        // Reservations — an account's RSVP to an event. Gated (in-handler, per
+        // event) on `/events/:eventId/join`; the account defaults to the caller.
+        'reservations.set': {
+            summary: 'Create or update a reservation (RSVP) for an event.',
+            http: { method: 'PUT', path: '/events/:eventId/reservation' },
+            input: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['eventId', 'response'],
+                properties: {
+                    eventId: { type: 'string', description: 'Event id (evt_…).' },
+                    accountId: {
+                        type: 'string',
+                        description: 'Account reserving (defaults to the caller; '
+                                + 'another account requires admin).'
+                    },
+                    response: {
+                        type: 'string',
+                        enum: ['going', 'maybe', 'not-going'],
+                        description: 'RSVP response.'
+                    },
+                    guests: {
+                        type: 'array',
+                        items: { type: 'string' },
+                        description: 'Guest names, each possibly empty.'
+                    }
+                }
+            },
+            handler: async ({ eventId, accountId, response, guests }, ctx) => {
+                const t = await reservationTarget(eventId, accountId, ctx);
+                if (!t) return null;
+                const { newValue } = await reservations.edit(
+                        `${t.key}.json`, (draft) => ({
+                            id: t.key,
+                            eventId,
+                            accountId: t.acctId,
+                            response,
+                            guests: guests ?? [],
+                            createdAt: draft?.createdAt
+                                    ?? new Date().toISOString(),
+                            updatedAt: new Date().toISOString()
+                        }));
+                return newValue;
+            }
+        },
+
+        'reservations.get': {
+            summary: "Fetch an account's reservation for an event.",
+            http: { method: 'GET', path: '/events/:eventId/reservation' },
+            input: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['eventId'],
+                properties: {
+                    eventId: { type: 'string', description: 'Event id (evt_…).' },
+                    accountId: {
+                        type: 'string',
+                        description: 'Defaults to the caller; another requires admin.'
+                    }
+                }
+            },
+            handler: async ({ eventId, accountId }, ctx) => {
+                const t = await reservationTarget(eventId, accountId, ctx);
+                if (!t) return null;
+                return (await reservations.get(`${t.key}.json`)) ?? null;
+            }
+        },
+
+        'reservations.delete': {
+            summary: "Delete an account's reservation for an event.",
+            http: { method: 'DELETE', path: '/events/:eventId/reservation' },
+            input: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['eventId'],
+                properties: {
+                    eventId: { type: 'string', description: 'Event id (evt_…).' },
+                    accountId: {
+                        type: 'string',
+                        description: 'Defaults to the caller; another requires admin.'
+                    }
+                }
+            },
+            handler: async ({ eventId, accountId }, ctx) => {
+                const t = await reservationTarget(eventId, accountId, ctx);
+                if (!t) return null;
+                let deleted = null;
+                await reservations.edit(`${t.key}.json`,
+                        (draft, { delete: del }) => {
+                            if (draft === undefined) return;
+                            deleted = JSON.parse(JSON.stringify(draft));
+                            del();
+                        });
+                return deleted;
+            }
         }
     };
 
@@ -469,6 +608,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
             await sessions.close();
             await events.close();
             await accounts.close();
+            await reservations.close();
         }
     };
 }
@@ -480,4 +620,9 @@ function randomId(prefix) {
 function stripUndefined(obj) {
     return Object.fromEntries(
             Object.entries(obj).filter(([, v]) => v !== undefined));
+}
+
+// The secret token is shown once, in the create response; reads omit it.
+function withoutToken({ token, ...rest }) {
+    return rest;
 }
