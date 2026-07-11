@@ -12,11 +12,13 @@
   ],
   "scripts": {
     "start": "node index.mjs serve",
+    "build:client": "npm --prefix client install && npm --prefix client run build",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@fastify/static": "^10.1.0",
     "@fastify/swagger": "^9.7.0",
     "@fastify/swagger-ui": "^6.0.0",
     "@livingroom/cardcatalog": "file:../cardcatalog",

@@ -20,10 +20,14 @@ cli.mjs     sbopts command tree; path params + payload -> positionals (or --flag
 rest.mjs    Fastify routes        (input schema -> params/body/querystring + validation)
 mcp.mjs     stateless Streamable-HTTP MCP endpoint (tools/list + tools/call == registry)
 auth.mjs    Resource Server (JWT validation) + bootstrap issuer + invite redeem
+            + GET /admin login helper page
 permissions.mjs  pure path-glob matcher: can(grants, path)
 errors.mjs  ClientError(msg, statusCode) — the caller-error seam adapters map
-server.mjs  REST + OpenAPI(/docs) + MCP + auth in one Fastify process
-index.mjs   args -> CLI; else -> server
+spa.mjs     serve the built React client, content-negotiated onto the API URLs
+dev.mjs     `velvet --dev` supervisor: watched backend + Vite HMR
+server.mjs  REST + OpenAPI(/docs) + MCP + auth + SPA in one Fastify process
+index.mjs   args -> CLI; `--dev` -> dev supervisor; else -> server
+client/     Vite + React SPA (src/App.jsx); built to client/dist (gitignored)
 ```
 
 **JSON Schema is the shared pivot** — it's the one dialect MCP, OpenAPI, Fastify,
@@ -170,20 +174,54 @@ has been revoked". Snapshot a plain copy inside the updater (`[...draft.arr]`).
 
 ```sh
 velvet                       # or `velvet serve` — start server on :3000
+velvet --dev                 # dev: watched backend + Vite HMR (app at :5173)
 velvet invites create --email a@b.com   # CLI (no auth needed locally)
+npm run build:client         # build the SPA into client/dist
 npm start                    # = node index.mjs serve
 ```
 
 Env: `VELVET_PUBLIC_URL` (default `http://localhost:3000`; must match what a
 client hits — baked into discovery/issuer/aud), `VELVET_JWT_SECRET` (overrides
-the persisted key, not persisted), `VELVET_DATA` (default `data`), `VELVET_AUTH=off`
-(dev: no guards, everyone admin). OpenAPI + docs UI at `/docs`.
+the persisted key, not persisted), `VELVET_DATA` (default `data`), `VELVET_PORT`
+(default `3000`), `VELVET_AUTH=off` (dev: no guards, everyone admin). OpenAPI +
+docs UI at `/docs`.
+
+## Frontend (SPA)
+
+`client/` is a Vite + React SPA, built to `client/dist` (gitignored; `npm run
+build:client`). `spa.mjs` serves it **content-negotiated on the same URLs as the
+API** (a 5th door): a browser navigation (`Accept: text/html`) to a non-server
+path gets the app shell — so RESTful URLs double as client routes — while a
+fetch (`Accept: application/json`, or `*/*`) falls through to the JSON handler.
+Plain `fetch` already gets JSON (default `Accept: */*`); only navigations get the
+shell. Infra paths (`/mcp`, `/oauth`, `/bootstrap`, `/.well-known`, `/docs`,
+`/admin`, `/assets`) are excluded (`NON_SPA`). No client build → API-only.
+
+`GET /admin` (in `auth.mjs`) is a standalone helper page (not an API door) that
+drives the bootstrap flow — request a code (printed to the terminal), redeem it,
+stash the admin JWT in `localStorage` (`velvet.accessToken`). The SPA reads that
+token and sends it as a Bearer; the startup banner points the operator there.
+
+`velvet --dev` (`dev.mjs`) runs both halves hot-reloading: the backend under
+`node --watch` (env `VELVET_DEV=1` → it skips serving assets), and the Vite dev
+server (React HMR) which proxies API/infra to the backend
+(`client/vite.config.js`, mirroring the same-URL negotiation). Dev mirrors prod
+— same relative URLs — so nothing in the client changes between the two. The
+backend runs in the **invocation cwd** (so `data/` resolves like the plain
+server).
 
 ## Gotchas
 
-- **Testing the server: don't `pkill -f "index.mjs serve"`** — the pattern matches
-  your own shell. Kill by port (`fuser -k 3000/tcp`) or capture `$!` at launch.
-  A node server's `comm` shows as `MainThread`, so `comm`-based filters miss it.
+- **The operator keeps a `velvet --dev` running on :3000 (API) and :5173 (Vite)
+  for live testing — never disturb it.** Don't bind those ports and don't
+  `fuser -k`/`pkill` them. For your own verification, start a throwaway server on
+  a *different* port with an *isolated* data dir
+  (`VELVET_PORT=4173 VELVET_DATA=/tmp/velvet-test node index.mjs serve`) and kill
+  it by the captured `$!` only. Editing a `.mjs` will hot-reload their `--dev`
+  backend (that's fine/intended); the client hot-reloads via Vite.
+- **Killing a *test* server: don't `pkill -f "index.mjs serve"`** — the pattern
+  matches your own shell. Capture `$!` at launch and `kill` that. A node server's
+  `comm` shows as `MainThread`, so `comm`-based filters miss it.
 - **`data/` is gitignored** — holds the signing key and live bootstrap credential.
   Never commit it.
 - **`package.json` uses `file:../` deps** (`pulp-db`, `cardcatalog`, `sbopts`) —

@@ -1,3 +1,5 @@
+import pathLib from 'path';
+import { fileURLToPath } from 'url';
 import Fastify from 'fastify';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
@@ -5,6 +7,7 @@ import swaggerUi from '@fastify/swagger-ui';
 import { registerRest } from './rest.mjs';
 import { registerMcp } from './mcp.mjs';
 import { registerAuth } from './auth.mjs';
+import { registerSpa } from './spa.mjs';
 
 // One process, four doors into the same registry:
 //   - REST routes        (registerRest)
@@ -50,6 +53,16 @@ export async function startServer({ actions, close, redeemInvite, makeContext },
     registerMcp(fastify, actions,
             { path: '/mcp', onRequest: guard, makeContext: ctxFor });
 
+    // The built React client (if present), content-negotiated onto the API
+    // URLs. In `--dev` the Vite dev server serves the client and proxies here,
+    // so the backend stays API-only.
+    const dev = process.env.VELVET_DEV === '1';
+    if (!dev) {
+        const clientDist = pathLib.join(
+                pathLib.dirname(fileURLToPath(import.meta.url)), 'client', 'dist');
+        await registerSpa(fastify, { clientDist });
+    }
+
     fastify.addHook('onClose', async () => {
         await close();
         if (closeAuth) await closeAuth();
@@ -62,6 +75,15 @@ export async function startServer({ actions, close, redeemInvite, makeContext },
         fastify.log.error(e);
         await close();
         process.exit(1);
+    }
+
+    // A friendly pointer for the operator — straight into logging in as admin.
+    // (In --dev the supervisor prints the dev URLs instead.)
+    if (!dev) {
+        process.stdout.write('\n  velvet is running.\n'
+                + (authEnabled
+                    ? `  Log in as admin:  ${publicUrl}/admin\n\n`
+                    : '  VELVET_AUTH=off — every caller is admin (no login needed).\n\n'));
     }
 
     return fastify;

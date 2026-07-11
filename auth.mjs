@@ -161,6 +161,15 @@ export async function registerAuth(fastify,
     }
 
     // REST front-end: no browser, no PKCE — terminal possession is the proof.
+    // A standalone helper page (not an API door): drives the bootstrap flow so
+    // the operator can log the browser in as admin without curling. It requests
+    // a code (printed to the terminal), redeems it, and stashes the admin JWT in
+    // localStorage for the SPA to use.
+    fastify.get('/admin', { schema: { hide: true } }, async (request, reply) => {
+        reply.type('text/html');
+        return adminPage();
+    });
+
     fastify.post('/bootstrap/challenge', { schema: { hide: true } },
             async (request, reply) => {
                 await mintCode();
@@ -400,4 +409,82 @@ ${hidden}
 inputmode="latin" autocomplete="off"></label>
 <button type="submit">Authorize</button>
 </form></body></html>`;
+}
+
+// The /admin bootstrap-login helper page. Two steps: request a code (printed to
+// the terminal), then redeem it — storing the admin JWT for the SPA.
+function adminPage() {
+    return `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>velvet — admin login</title>
+<style>
+body{font:16px/1.5 system-ui;max-width:26rem;margin:4rem auto;padding:0 1rem}
+h1{margin-bottom:.25rem}
+p.sub{color:#666;margin-top:0}
+button{padding:.55rem 1rem;font:inherit;cursor:pointer}
+input{width:100%;padding:.55rem;margin:.5rem 0;box-sizing:border-box;
+font:1.3rem ui-monospace,monospace;letter-spacing:.12em;text-align:center}
+.step{margin:1.5rem 0}
+#status{min-height:1.5rem;color:#666}
+.err{color:#b00}.ok{color:#0a0}
+a.btn{display:inline-block;text-decoration:none}
+</style></head><body>
+<h1>velvet</h1>
+<p class="sub">Log in as an admin.</p>
+
+<div class="step">
+  <button id="request">Request a login code</button>
+  <p id="status"></p>
+</div>
+
+<div class="step" id="form" hidden>
+  <label>Code from the server terminal
+    <input id="code" inputmode="latin" autocomplete="off" placeholder="e.g. 48f2 9a1c">
+  </label>
+  <button id="login">Log in</button>
+</div>
+
+<div class="step" id="done" hidden>
+  <p class="ok">✓ Logged in as admin.</p>
+  <a class="btn" href="/"><button>Continue to velvet →</button></a>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const status = (msg, cls) => { const el = $('status'); el.textContent = msg; el.className = cls || ''; };
+
+$('request').addEventListener('click', async () => {
+  status('Requesting…');
+  const r = await fetch('/bootstrap/challenge', { method: 'POST' });
+  if (!r.ok) return status('Could not request a code.', 'err');
+  $('form').hidden = false;
+  $('code').focus();
+  status("A one-time code was printed in the server's terminal — enter it above.");
+});
+
+$('login').addEventListener('click', async () => {
+  const code = $('code').value.trim().replace(/\\s+/g, '');
+  status('Logging in…');
+  const r = await fetch('/bootstrap/redeem', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code })
+  });
+  const body = await r.json().catch(() => ({}));
+  if (r.ok && body.access_token) {
+    localStorage.setItem('velvet.accessToken', body.access_token);
+    if (body.refresh_token) localStorage.setItem('velvet.refreshToken', body.refresh_token);
+    $('form').hidden = true;
+    $('request').closest('.step').hidden = true;
+    $('done').hidden = false;
+    status('');
+  } else {
+    status(body.error === 'rate_limited'
+      ? 'Too many attempts — wait a moment and try again.'
+      : 'Invalid or expired code.', 'err');
+  }
+});
+$('code').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('login').click(); });
+</script>
+</body></html>`;
 }

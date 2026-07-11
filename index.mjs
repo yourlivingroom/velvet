@@ -1,15 +1,22 @@
 #!/usr/bin/env node
 import { buildCli } from './cli.mjs';
 import { startServer } from './server.mjs';
+import { runDev } from './dev.mjs';
 import velvetLogic from './logic.mjs';
 
 async function main() {
     const argv = process.argv.slice(2);
     const rootPath = process.env.VELVET_DATA ?? 'data';
 
-    // No args (or `serve`) -> run the server. Anything else -> run the CLI.
-    if (argv.length === 0 || argv[0] === 'serve') {
-        await startServer(velvetLogic(rootPath), { port: 3000, rootPath });
+    // No args, `serve`, or `--dev` -> run the server. Anything else -> the CLI.
+    const first = argv[0];
+    if (argv.length === 0 || first === 'serve' || first === '--dev') {
+        if (argv.includes('--dev')) {
+            runDev();   // supervisor: watched backend + Vite HMR
+            return;
+        }
+        const port = Number(process.env.VELVET_PORT ?? 3000);
+        await startServer(velvetLogic(rootPath), { port, rootPath });
         return;
     }
 
