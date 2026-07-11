@@ -24,8 +24,9 @@ export function registerMcp(fastify, actions, {
 } = {}) {
     const tools = Object.entries(actions).map(([n, a]) => toMcpTool(n, a));
 
-    async function handle(message, isAdminCaller) {
+    async function handle(message, ctx) {
         const { id, method, params } = message;
+        const isAdminCaller = ctx.isAdmin;
         const ok = result => ({ jsonrpc: '2.0', id, result });
         const err = (code, msg) => ({ jsonrpc: '2.0', id, error: { code, message: msg } });
 
@@ -54,7 +55,7 @@ export function registerMcp(fastify, actions, {
                     return err(FORBIDDEN, 'Forbidden: admin role required');
                 }
                 try {
-                    const out = await action.handler(params.arguments ?? {});
+                    const out = await action.handler(params.arguments ?? {}, ctx);
                     return ok({
                         content: [
                             { type: 'text', text: JSON.stringify(out, null, 2) }
@@ -83,14 +84,17 @@ export function registerMcp(fastify, actions, {
 
     fastify.post(path, { ...(onRequest ? { onRequest } : {}) }, async (request, reply) => {
         const body = request.body;
-        const isAdminCaller = isAdmin(request.auth);
+        const ctx = {
+            auth: request.auth ?? null,
+            isAdmin: isAdmin(request.auth)
+        };
 
         // Batched requests.
         if (Array.isArray(body)) {
             const responses = [];
             for (const m of body) {
                 if (!isNotification(m)) {
-                    responses.push(await handle(m, isAdminCaller));
+                    responses.push(await handle(m, ctx));
                 }
             }
             return responses.length ? responses : reply.code(202).send();
@@ -101,6 +105,6 @@ export function registerMcp(fastify, actions, {
             return reply.code(202).send();
         }
 
-        return handle(body, isAdminCaller);
+        return handle(body, ctx);
     });
 }

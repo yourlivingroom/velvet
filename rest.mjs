@@ -5,9 +5,17 @@ import { ClientError } from './errors.mjs';
 // becomes the route's params/body/querystring schema, which (a) gives us
 // validation for free and (b) is what @fastify/swagger reads to emit OpenAPI.
 //
-// requireAdmin actions get the admin guard attached as an onRequest hook. If no
-// guard is supplied (auth disabled), those routes are left open (dev mode).
-export function registerRest(fastify, actions, { requireAdmin } = {}) {
+// requireAdmin actions get the admin guard attached as an onRequest hook (loud:
+// 401 anon / 403 non-admin). Every *other* route best-effort authenticates so
+// the handler still learns who's calling — that's how a handler can quietly
+// 404 the unauthorized (hide existence) rather than challenge them.
+export function registerRest(fastify, actions,
+        { requireAdmin, authenticate, isAdmin = () => false } = {}) {
+    // Populate request.auth from the Bearer token if present; never rejects.
+    const attachAuth = authenticate
+            ? async (request) => { request.auth = await authenticate(request); }
+            : null;
+
     // Register a JSON parser for every custom payload media type an action
     // declares (e.g. application/json-patch+json), which Fastify won't parse
     // out of the box.
@@ -69,12 +77,15 @@ export function registerRest(fastify, actions, { requireAdmin } = {}) {
             else schema.querystring = restSchema;   // GET (DELETE here has none)
         }
 
+        const onRequest = action.requireAdmin && requireAdmin
+                ? requireAdmin
+                : attachAuth;
+
         fastify.route({
             method,
             url: path,
             schema,
-            ...(action.requireAdmin && requireAdmin
-                    ? { onRequest: requireAdmin } : {}),
+            ...(onRequest ? { onRequest } : {}),
             handler: async (request, reply) => {
                 const input = { ...request.params };
                 if (bodyProp) {
@@ -84,9 +95,14 @@ export function registerRest(fastify, actions, { requireAdmin } = {}) {
                     Object.assign(input, hasBody ? request.body : request.query);
                 }
 
+                const ctx = {
+                    auth: request.auth ?? null,
+                    isAdmin: isAdmin(request.auth)
+                };
+
                 let result;
                 try {
-                    result = await action.handler(input);
+                    result = await action.handler(input, ctx);
                 }
                 catch (e) {
                     if (e instanceof ClientError) {

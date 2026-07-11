@@ -1,8 +1,9 @@
 # velvet
 
-A self-hosted event-management server. Status: **API only**, auth nailed down,
-first domain model (`events`) landing; `invites`/`sessions` still stand-ins. Not
-yet wired to a real claude.ai connection.
+A self-hosted event-management server. Status: **API only**. Admin auth *and*
+non-admin accounts (via invite tokens) both work; `events` and
+`invites`/`accounts` are real, `sessions` still a stand-in. Not yet wired to a
+real claude.ai connection.
 
 ## The one idea
 
@@ -18,7 +19,7 @@ bind.mjs    pure projections: schema -> sbopts flags, path/payload split, -> MCP
 cli.mjs     sbopts command tree; path params + payload -> positionals (or --flags)
 rest.mjs    Fastify routes        (input schema -> params/body/querystring + validation)
 mcp.mjs     stateless Streamable-HTTP MCP endpoint (tools/list + tools/call == registry)
-auth.mjs    Resource Server (JWT validation) + bootstrap issuer
+auth.mjs    Resource Server (JWT validation) + bootstrap issuer + invite redeem
 errors.mjs  ClientError(msg, statusCode) — the caller-error seam adapters map
 server.mjs  REST + OpenAPI(/docs) + MCP + auth in one Fastify process
 index.mjs   args -> CLI; else -> server
@@ -48,23 +49,32 @@ Keep record fields **flat scalars** (the sbopts ceiling). Nested inputs (object
 native JSON.
 
 Other keys:
-- `requireAdmin: true` — admin-only (see Auth).
-- `handler(input)` returns a value (serialized to all interfaces). `null` means
-  "not found" → REST 404. Throw `ClientError(msg, status)` for caller errors →
-  REST maps the status, MCP an `isError` result, CLI stderr + exit 1.
+- `requireAdmin: true` — admin-only, enforced by a loud guard (see Auth).
+- `handler(input, ctx)` returns a value (serialized to all interfaces). `ctx =
+  { isAdmin, auth }` (auth = JWT claims or null; CLI/MCP callers are always
+  admin). `null` means "not found" → REST 404 — also the *quiet* way to hide a
+  resource from the unauthorized (return null when `!ctx.isAdmin`; see Auth).
+  Throw `ClientError(msg, status)` for caller errors → REST maps the status, MCP
+  an `isError` result, CLI stderr + exit 1.
 
 CLI positionals (path params, then payload) fill left-to-right; giving the same
 one both positionally *and* by flag is an error. No other file needs editing.
 
 ## Domain (so far)
 
-- `events` — the first real model. The stored doc separates **our** metadata
-  (top-level: `id` = `evt_…`, `createdAt`) from the **user's** `config` (an
-  arbitrary JSON document). Only `config` is user-editable, and only via JSON
-  Patch (RFC 6902) at `PATCH /events/:eventId/config` (`events.patch`, whose
-  `payload` is the ops array). `GET /events/:eventId/config` returns just the
-  config; `GET /events/:eventId` the whole doc.
-- `invites` / `sessions` — still placeholder stand-ins.
+- `events` — stored doc separates **our** metadata (top-level `id` = `evt_…`,
+  `createdAt`) from the **user's** `config` (arbitrary JSON). Only `config` is
+  user-editable, via JSON Patch (RFC 6902) at `PATCH /events/:eventId/config`
+  (`events.patch`, whose `payload` is the ops array). `GET /events/:eventId/config`
+  returns just config; `GET /events/:eventId` the whole doc. Event reads are
+  **admin-only — 404 to everyone else** (quiet-hide, see Auth).
+- `invites` — an invite **is a token**. `invites.create` (admin) mints one; its
+  `id` (`nvt_…`) is a non-secret handle, its `token` field is the secret you put
+  in a link. `token`/`id` are separate so future expiry/single-use lives on the
+  token without touching account identity. Redeeming binds an **account**.
+- `accounts` — non-admin identities, auto-created (and bound to the invite) on
+  first redemption; a JWT's `sub` is an account id. `sessions` — still a
+  placeholder stand-in.
 
 ## Auth model
 
@@ -93,14 +103,24 @@ restarts.** Access (`aud=/mcp`) and refresh (`aud=/oauth/refresh`) are both JWTs
 (stateless, no server-side store). Rotating the bootstrap *code* never breaks a
 live connection — only the JWT, signed once on redeem, is checked thereafter.
 
-Authorization: `requireAdmin` is enforced in REST (route guard: 401 anon / 403
-authed-non-admin) and MCP (per-tool: hidden from `tools/list`, `Forbidden` on
-`tools/call`). **CLI is filesystem-trust = implicitly admin** (it calls handlers
-directly; anyone with `data/` access already has full control).
+Non-admin auth: `POST /invites/redeem {token}` trades an invite token for a
+**non-admin** JWT (`roles: []`), creating/binding the account on first redeem
+(`sub` = account id). Same signing key. REST-only (CLI/MCP are admin
+interfaces). Refresh preserves roles — no elevation.
 
-Admin = JWT carries `roles` including `"admin"`. Bootstrap tokens always do.
-There is currently **one** bootstrap admin; per-identity admins + external
-trusted issuers are deliberately deferred (`roles` is the seam for them).
+Authorization, two styles:
+- **Loud** — `requireAdmin` guards the admin surface: REST 401 anon / 403
+  authed-non-admin; MCP hides the tool from `tools/list` and returns `Forbidden`
+  on `tools/call`.
+- **Quiet** — for resources the public might probe by id, the handler returns
+  `null` (→ 404) to hide existence rather than challenge. Handlers get `ctx`;
+  REST best-effort-authenticates *every* route so `ctx` is populated even on
+  ungated ones.
+
+**CLI is filesystem-trust = implicitly admin** (calls handlers directly with
+`ctx.isAdmin = true`). Admin = JWT `roles` includes `"admin"` (bootstrap tokens
+always do; redeemed invite tokens never do). Per-identity admins + external
+trusted issuers are still deferred (`roles` / the RS is the seam).
 
 ## Run
 
@@ -127,12 +147,32 @@ the persisted key, not persisted), `VELVET_DATA` (default `data`), `VELVET_AUTH=
 - **claude.ai needs a public HTTPS URL** for MCP — can't dial `http://localhost`.
   Local CLI/REST is genuinely turnkey; remote MCP needs a tunnel.
 
-## Dogfooding pulp-db
+## Dogfooding pulp-db + cardcatalog
 
-This project exists partly to exercise `@livingroom/pulp-db`. Findings so far:
-- Fixed its broken `get()` (`fs.promises.read` → `readFile`).
-- Added `list()` (direct `readdir`, strongly consistent) — its cardcatalog index
-  is eventually-consistent (chokidar watcher), wrong for read-after-write.
-- No native TTL/expiry; bootstrap codes use an `expiresAt` field + lazy sweep.
-  Candidate pulp-db feature if a second TTL collection appears.
+Exercises `@livingroom/pulp-db` and `@livingroom/cardcatalog`. **Neither is
+version-controlled** — their edits live in the sibling dirs, uncommitted.
+
+**Index materialization is a choice.** An index is a *definition* (a
+`process`/`emit` fn) plus a *materialization*:
+- **live** (default) — cardcatalog keeps it in a chokidar-watched LevelDB: fast,
+  but holds an exclusive lock and is eventually consistent (watcher lag).
+- **inline** (`pulpDb(idx, { inline: true })`) — no persistent structure; each
+  query scans the collection and runs `process` in memory. No LevelDB, no
+  watcher, no lock.
+
+Same query API either way (`store.indexes.<name>.get(key)`). velvet runs the
+**server live** and the **CLI inline**, so a one-shot CLI shares a `data/` dir
+with a live server without fighting for the lock. `invites` carries a `byToken`
+index; redemption uses it (eventual consistency is fine — a token is handed to a
+human before anyone redeems it).
+
+Fixes made along the way:
+- pulp-db `get()` was broken (`fs.promises.read` → `readFile`); added `list()`
+  (direct `readdir`) and the `inline` mode above.
+- cardcatalog: `mkdirSync(dataPath)` before watching (it silently indexed
+  *nothing* on a fresh dir — every lookup was null); a `shouldIndex(path, stats)`
+  predicate so the caller filters files (pulp-db passes `p => p.endsWith('.json')`
+  to skip write-file-atomic's temp files — indexing those double-registers a key
+  → `get()` throws "Multiple matches"); debug logs gated behind `CARDCATALOG_DEBUG`.
+- No native TTL; bootstrap codes use an `expiresAt` field + lazy sweep.
 ```

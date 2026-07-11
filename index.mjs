@@ -13,7 +13,9 @@ async function main() {
         return;
     }
 
-    const logic = velvetLogic(rootPath);
+    // The CLI is short-lived and filesystem-trust: run indexes inline so it
+    // never grabs the LevelDB lock and can run beside a live server.
+    const logic = velvetLogic(rootPath, { inline: true });
     try {
         await buildCli(logic.actions).run(argv);
     }

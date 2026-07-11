@@ -59,7 +59,8 @@ async function loadOrCreateKey(rootPath) {
     }
 }
 
-export async function registerAuth(fastify, { publicUrl, rootPath = 'data' }) {
+export async function registerAuth(fastify,
+        { publicUrl, rootPath = 'data', redeemInvite }) {
     const issuer = publicUrl;
     const resource = `${publicUrl}/mcp`;
     const refreshAud = `${publicUrl}/oauth/refresh`;
@@ -178,6 +179,24 @@ export async function registerAuth(fastify, { publicUrl, rootPath = 'data' }) {
                     return reply.code(401).send({ error: 'invalid_code' });
                 }
                 return issueTokens();
+            });
+
+    // Invite redemption: trade an invite token for a *non-admin* JWT. The
+    // account is created on first redemption (see logic.redeemInvite); the
+    // token maps to a stable account thereafter. Public — the token is the
+    // credential. REST-only (CLI/MCP are admin interfaces).
+    fastify.post('/invites/redeem', { schema: { hide: true } },
+            async (request, reply) => {
+                if (rateLimited()) {
+                    return reply.code(429).send({ error: 'rate_limited' });
+                }
+                const result = redeemInvite
+                        ? await redeemInvite((request.body ?? {}).token)
+                        : null;
+                if (!result) {
+                    return reply.code(401).send({ error: 'invalid_token' });
+                }
+                return issueTokens(result.accountId, []);   // non-admin
             });
 
     // ---- Resource Server ---------------------------------------------------
@@ -342,6 +361,7 @@ export async function registerAuth(fastify, { publicUrl, rootPath = 'data' }) {
             });
 
     return {
+        authenticate,   // best-effort: resolve caller identity, never rejects
         requireAuth,
         requireAdmin,
         isAdmin,

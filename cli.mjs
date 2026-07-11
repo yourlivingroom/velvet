@@ -81,7 +81,8 @@ async function dispatch(action, flags, positionals, slots, required) {
         }
 
         const input = coerceCliInput(action.input, merged);
-        const result = await action.handler(input);
+        // The CLI is an admin-only interface (filesystem trust).
+        const result = await action.handler(input, { isAdmin: true, auth: null });
         process.stdout.write(JSON.stringify(result, null, 2) + '\n');
     }
     catch (e) {

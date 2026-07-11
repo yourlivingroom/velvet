@@ -11,7 +11,7 @@ import { registerAuth } from './auth.mjs';
 //   - OpenAPI + docs UI  (@fastify/swagger, derived from those routes)
 //   - MCP endpoint       (registerMcp), guarded by JWT validation
 //   - Auth: RS + bootstrap issuer (registerAuth)
-export async function startServer({ actions, close }, {
+export async function startServer({ actions, close, redeemInvite }, {
     port = 3000,
     rootPath = 'data'
 } = {}) {
@@ -28,11 +28,13 @@ export async function startServer({ actions, close }, {
     });
     await fastify.register(swaggerUi, { routePrefix: '/docs' });
 
-    let guard, requireAdmin, isAdmin, closeAuth;
+    let guard, requireAdmin, authenticate, isAdmin, closeAuth;
     if (authEnabled) {
-        const auth = await registerAuth(fastify, { publicUrl, rootPath });
+        const auth = await registerAuth(fastify,
+                { publicUrl, rootPath, redeemInvite });
         guard = auth.requireAuth;
         requireAdmin = auth.requireAdmin;
+        authenticate = auth.authenticate;
         isAdmin = auth.isAdmin;
         closeAuth = auth.close;
     }
@@ -43,7 +45,7 @@ export async function startServer({ actions, close }, {
         isAdmin = () => true;
     }
 
-    registerRest(fastify, actions, { requireAdmin });
+    registerRest(fastify, actions, { requireAdmin, authenticate, isAdmin });
     registerMcp(fastify, actions, { path: '/mcp', onRequest: guard, isAdmin });
 
     fastify.addHook('onClose', async () => {

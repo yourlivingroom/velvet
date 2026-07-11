@@ -5,6 +5,19 @@ import { ClientError } from './errors.mjs';
 
 const { applyPatch } = jsonpatch;
 
+// Index invites by their secret token so redemption can look one up. Defined
+// once, materialized per context: the server keeps a live cardcatalog/LevelDB
+// index (eventually consistent, watched); a short-lived CLI answers the same
+// query by scanning on demand. Same query API either way.
+const INVITE_INDEXES = {
+    byToken: {
+        process(fileContent, emit) {
+            const doc = JSON.parse(fileContent);
+            if (doc.token) emit(doc.token, doc.id);
+        }
+    }
+};
+
 // The single source of truth for what velvet can do.
 //
 // Each action is a self-describing descriptor:
@@ -23,20 +36,35 @@ const { applyPatch } = jsonpatch;
 // The three interfaces (cli.mjs, the REST server, the MCP server) are thin
 // adapters that consume this registry; no interface hand-writes an action.
 
-export default function velvetLogic(rootPath = 'data') {
-    const invites = pulpDb({}, {
+// The long-running server keeps live indexes (inline:false); short-lived,
+// filesystem-trust callers like the CLI pass inline:true so they answer index
+// queries by scanning and never grab the LevelDB lock — letting them run beside
+// a live server on the same data dir.
+export default function velvetLogic(rootPath = 'data', { inline = false } = {}) {
+    const invites = pulpDb(INVITE_INDEXES, {
         dataPath: `${rootPath}/invites`,
-        indexPath: `${rootPath}/indexes/invites`
+        indexPath: `${rootPath}/indexes/invites`,
+        inline
     });
 
     const sessions = pulpDb({}, {
         dataPath: `${rootPath}/sessions`,
-        indexPath: `${rootPath}/indexes/sessions`
+        indexPath: `${rootPath}/indexes/sessions`,
+        inline
     });
 
     const events = pulpDb({}, {
         dataPath: `${rootPath}/events`,
-        indexPath: `${rootPath}/indexes/events`
+        indexPath: `${rootPath}/indexes/events`,
+        inline
+    });
+
+    // Accounts: non-admin identities, auto-created when an invite token is
+    // first redeemed (see redeemInvite). A JWT's `sub` is an account id.
+    const accounts = pulpDb({}, {
+        dataPath: `${rootPath}/accounts`,
+        indexPath: `${rootPath}/indexes/accounts`,
+        inline
     });
 
     function collection(store, prefix) {
@@ -72,10 +100,59 @@ export default function velvetLogic(rootPath = 'data') {
     const inviteCol = collection(invites, 'nvt');
     const sessionCol = collection(sessions, 'sssn');
     const eventCol = collection(events, 'evt');
+    const accountCol = collection(accounts, 'acct');
+
+    // Trade an invite token for an account id, creating the account on first
+    // redemption. Not a registry action: it's public and issues no data of its
+    // own — auth.mjs wraps it to mint a (non-admin) JWT. Returns { accountId }
+    // or null (unknown token).
+    // Redeem an invite by its secret token, via the byToken index (materialized
+    // on-demand — see INVITE_INDEXES). (future: reject here if expired or
+    // already consumed / single-use.)
+    async function redeemInvite(token) {
+        if (typeof token !== 'string' || !token) return null;
+
+        let match;
+        try {
+            match = await invites.indexes.byToken.get(token);
+        }
+        catch {
+            return null;   // ambiguous match (shouldn't happen — tokens unique)
+        }
+        if (!match) return null;
+
+        // Atomically bind an account to the invite. pulp-db serializes edits per
+        // path, so only one racer sets accountId (already-redeemed invites just
+        // return their bound account); the winner then writes the account doc.
+        const newAccountId = randomId('acct');
+        let boundId;
+        let inviteId;
+        await invites.edit(match.path, (draft) => {
+            if (!draft) return;
+            inviteId = draft.id;
+            if (draft.accountId) { boundId = draft.accountId; return; }
+            draft.accountId = newAccountId;
+            boundId = newAccountId;
+        });
+        if (!boundId) return null;
+        if (boundId === newAccountId) {
+            await accounts.edit(`${newAccountId}.json`, () => ({
+                id: newAccountId,
+                createdAt: new Date().toISOString(),
+                invite: inviteId
+            }));
+        }
+        return { accountId: boundId };
+    }
 
     const actions = {
         'invites.create': {
-            summary: 'Create a new invite.',
+            summary: 'Create a new invite token.',
+            description: 'Creates an invite. The returned `token` is the secret '
+                    + 'bearer credential — put it in the link you send. The `id` '
+                    + '(nvt_…) is a non-secret handle for management. Redeeming '
+                    + 'the token (POST /invites/redeem) yields a non-admin JWT '
+                    + 'for an account auto-created on first redemption.',
             requireAdmin: true,
             http: { method: 'POST', path: '/invites' },
             input: {
@@ -92,8 +169,10 @@ export default function velvetLogic(rootPath = 'data') {
                     }
                 }
             },
-            handler: ({ email, note }) =>
-                    inviteCol.createDoc(stripUndefined({ email, note }))
+            handler: ({ email, note }) => inviteCol.createDoc({
+                token: crypto.randomBytes(24).toString('hex'), // 192-bit secret
+                ...stripUndefined({ email, note })
+            })
         },
 
         'invites.get': {
@@ -190,7 +269,10 @@ export default function velvetLogic(rootPath = 'data') {
                     eventId: { type: 'string', description: 'Event id (evt_…).' }
                 }
             },
-            handler: ({ eventId }) => eventCol.getDoc(eventId)
+            // The full event doc is admin info (our metadata + config). To the
+            // unauthorized we return null → 404: hide existence, don't 401.
+            handler: ({ eventId }, ctx) =>
+                    ctx.isAdmin ? eventCol.getDoc(eventId) : null
         },
 
         'events.getConfig': {
@@ -204,7 +286,8 @@ export default function velvetLogic(rootPath = 'data') {
                     eventId: { type: 'string', description: 'Event id (evt_…).' }
                 }
             },
-            handler: async ({ eventId }) => {
+            handler: async ({ eventId }, ctx) => {
+                if (!ctx.isAdmin) return null;   // 404 to the unauthorized
                 const event = await eventCol.getDoc(eventId);
                 return event === null ? null : event.config;
             }
@@ -303,15 +386,40 @@ export default function velvetLogic(rootPath = 'data') {
                         });
                 return found ? newValue : null;
             }
+        },
+
+        'accounts.get': {
+            summary: 'Fetch a single account by id.',
+            requireAdmin: true,
+            http: { method: 'GET', path: '/accounts/:accountId' },
+            input: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['accountId'],
+                properties: {
+                    accountId: { type: 'string', description: 'Account id (acct_…).' }
+                }
+            },
+            handler: ({ accountId }) => accountCol.getDoc(accountId)
+        },
+
+        'accounts.list': {
+            summary: 'List all accounts.',
+            requireAdmin: true,
+            http: { method: 'GET', path: '/accounts' },
+            input: { type: 'object', additionalProperties: false, properties: {} },
+            handler: () => accountCol.listDocs()
         }
     };
 
     return {
         actions,
+        redeemInvite,
         async close() {
             await invites.close();
             await sessions.close();
             await events.close();
+            await accounts.close();
         }
     };
 }
