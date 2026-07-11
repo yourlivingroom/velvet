@@ -229,26 +229,10 @@ export async function registerAuth(fastify,
         }
     }
 
-    function isAdmin(auth) {
-        return Array.isArray(auth?.roles) && auth.roles.includes('admin');
-    }
-
     async function requireAuth(request, reply) {
         const auth = await authenticate(request);
         if (!auth) return unauthorized(reply);
         request.auth = auth;
-    }
-
-    // Authenticate, then require the admin role. Used as the route guard for
-    // requireAdmin actions on REST. (MCP enforces per-tool inside dispatch.)
-    async function requireAdmin(request, reply) {
-        const auth = await authenticate(request);
-        if (!auth) return unauthorized(reply);
-        request.auth = auth;
-        if (!isAdmin(auth)) {
-            return reply.code(403).send({
-                error: 'forbidden', detail: 'admin role required' });
-        }
     }
 
     fastify.get('/.well-known/oauth-protected-resource', { schema: { hide: true } },
@@ -362,9 +346,8 @@ export async function registerAuth(fastify,
 
     return {
         authenticate,   // best-effort: resolve caller identity, never rejects
-        requireAuth,
-        requireAdmin,
-        isAdmin,
+        requireAuth,    // onRequest guard for /mcp (401 + WWW-Authenticate)
+        challenge: unauthorized,   // send the 401 + WWW-Authenticate response
         async close() { await codes.close(); }
     };
 }

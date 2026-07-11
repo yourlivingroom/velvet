@@ -5,16 +5,28 @@ import { ClientError } from './errors.mjs';
 // becomes the route's params/body/querystring schema, which (a) gives us
 // validation for free and (b) is what @fastify/swagger reads to emit OpenAPI.
 //
-// requireAdmin actions get the admin guard attached as an onRequest hook (loud:
-// 401 anon / 403 non-admin). Every *other* route best-effort authenticates so
-// the handler still learns who's calling — that's how a handler can quietly
-// 404 the unauthorized (hide existence) rather than challenge them.
+// An action's `requires` permission becomes a loud onRequest guard (401 anon /
+// 403 authed-but-unpermitted). Every *other* route best-effort authenticates so
+// the handler still learns who's calling — that's how a handler can quietly 404
+// the unauthorized (hide existence) rather than challenge them.
 export function registerRest(fastify, actions,
-        { requireAdmin, authenticate, makeContext } = {}) {
+        { authenticate, challenge, makeContext } = {}) {
     // Populate request.auth from the Bearer token if present; never rejects.
     const attachAuth = authenticate
             ? async (request) => { request.auth = await authenticate(request); }
             : null;
+
+    // Loud guard for an action that `requires` a permission.
+    const requirePermission = (permission) => async (request, reply) => {
+        const auth = await authenticate(request);
+        if (!auth) return challenge(reply);   // 401 + WWW-Authenticate
+        request.auth = auth;
+        const ctx = await makeContext(auth);
+        if (!ctx.can(permission)) {
+            return reply.code(403).send({
+                error: 'forbidden', detail: `requires ${permission}` });
+        }
+    };
 
     // Register a JSON parser for every custom payload media type an action
     // declares (e.g. application/json-patch+json), which Fastify won't parse
@@ -77,8 +89,8 @@ export function registerRest(fastify, actions,
             else schema.querystring = restSchema;   // GET (DELETE here has none)
         }
 
-        const onRequest = action.requireAdmin && requireAdmin
-                ? requireAdmin
+        const onRequest = action.requires && authenticate
+                ? requirePermission(action.requires)
                 : attachAuth;
 
         fastify.route({

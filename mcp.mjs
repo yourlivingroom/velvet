@@ -26,7 +26,6 @@ export function registerMcp(fastify, actions, {
 
     async function handle(message, ctx) {
         const { id, method, params } = message;
-        const isAdminCaller = ctx.isAdmin;
         const ok = result => ({ jsonrpc: '2.0', id, result });
         const err = (code, msg) => ({ jsonrpc: '2.0', id, error: { code, message: msg } });
 
@@ -40,10 +39,11 @@ export function registerMcp(fastify, actions, {
                 });
 
             case 'tools/list':
-                // Don't advertise admin tools to non-admin callers.
+                // Don't advertise tools the caller lacks permission for.
                 return ok({
                     tools: tools.filter(t =>
-                            !actions[t.name].requireAdmin || isAdminCaller)
+                            !actions[t.name].requires
+                            || ctx.can(actions[t.name].requires))
                 });
 
             case 'tools/call': {
@@ -51,8 +51,8 @@ export function registerMcp(fastify, actions, {
                 if (!action) {
                     return err(-32602, `Unknown tool: ${params?.name}`);
                 }
-                if (action.requireAdmin && !isAdminCaller) {
-                    return err(FORBIDDEN, 'Forbidden: admin role required');
+                if (action.requires && !ctx.can(action.requires)) {
+                    return err(FORBIDDEN, `Forbidden: requires ${action.requires}`);
                 }
                 try {
                     const out = await action.handler(params.arguments ?? {}, ctx);

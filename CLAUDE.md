@@ -12,7 +12,7 @@ and mechanically projected onto four interfaces. Never hand-write an interface �
 add to the registry and all four update.
 
 ```
-logic.mjs   THE registry. action = { summary, description?, requireAdmin?,
+logic.mjs   THE registry. action = { summary, description?, requires?,
             payload?, http:{method, path, mediaType?}, input:<JSON Schema>, handler }
 bind.mjs    pure projections: schema -> sbopts flags, path/payload split, -> MCP
             tool; cliSummary() folds CLI-only hints into help text
@@ -50,7 +50,8 @@ Keep record fields **flat scalars** (the sbopts ceiling). Nested inputs (object
 native JSON.
 
 Other keys:
-- `requireAdmin: true` — admin-only, enforced by a loud guard (see Auth).
+- `requires: '<permission path>'` — loud-gate the action behind a permission,
+  e.g. `'/server/admin'` for operational actions (see Auth).
 - `handler(input, ctx)` returns a value (serialized to all interfaces). `ctx =
   { isAdmin, auth, grants, can(path), assertPermission(path) }` (see Permissions).
   `null` means "not found" → REST 404 — also the *quiet* way to hide a resource
@@ -124,17 +125,19 @@ carries `can(path)` (boolean) and `assertPermission(path)` (throws
 best-effort-authenticates *every* route so ctx is populated even on ungated ones.
 
 Two enforcement styles:
-- **Loud** — `requireAdmin` guard (REST 401 anon / 403 non-admin; MCP hides the
-  tool + `Forbidden`), and `ctx.assertPermission(...)` → 403. For the admin
-  surface.
+- **Loud** — an action's `requires: '<perm>'` becomes a route guard (REST 401
+  anon / 403 unpermitted; MCP hides the tool from `tools/list` + `Forbidden` on
+  call), and `ctx.assertPermission(...)` → 403. Operational actions use
+  `requires: '/server/admin'`.
 - **Quiet** — handler returns `null` (→ 404) when `!ctx.can(...)`, to hide a
   resource the public might probe by id rather than challenge. Event reads do
-  this.
+  this (`/events/:id/view` for config, `/events/:id/admin` for the full doc).
 
 **CLI is filesystem-trust = implicitly admin** (`makeContext` with a synthetic
-admin auth → `**`). Admin = JWT `roles` includes `"admin"` (bootstrap tokens
-always; redeemed invites never). `requireAdmin` is still a separate coarse gate;
-it could later become a permission check too. Per-identity admins + external
+admin auth → `**`). "Admin" isn't a magic boolean — it's just holding `**`
+(bootstrap JWTs and the CLI resolve to it; redeemed invites don't). So `requires`
+is an ordinary permission — you could grant `/server/admin` without `**`, or make
+a `requires` event-scoped, with no new machinery. Per-identity admins + external
 trusted issuers remain deferred.
 
 **Gotcha:** never let an immer draft (or a sub-object of one) escape an `edit()`

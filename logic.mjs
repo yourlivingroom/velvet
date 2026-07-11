@@ -103,10 +103,6 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
     const eventCol = collection(events, 'evt');
     const accountCol = collection(accounts, 'acct');
 
-    // Trade an invite token for an account id, creating the account on first
-    // redemption. Not a registry action: it's public and issues no data of its
-    // own — auth.mjs wraps it to mint a (non-admin) JWT. Returns { accountId }
-    // or null (unknown token).
     // Resolve a caller's grants (glob patterns). Admins (and the CLI) get `**`;
     // a redeemed account gets whatever grants its invite conferred; anyone else
     // gets nothing. Looked up per-request from the account store, so grants stay
@@ -192,7 +188,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                     + '(nvt_…) is a non-secret handle for management. Redeeming '
                     + 'the token (POST /invites/redeem) yields a non-admin JWT '
                     + 'for an account auto-created on first redemption.',
-            requireAdmin: true,
+            requires: '/server/admin',
             http: { method: 'POST', path: '/invites' },
             input: {
                 type: 'object',
@@ -239,7 +235,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
 
         'invites.list': {
             summary: 'List all invites.',
-            requireAdmin: true,
+            requires: '/server/admin',
             http: { method: 'GET', path: '/invites' },
             input: { type: 'object', additionalProperties: false, properties: {} },
             handler: () => inviteCol.listDocs()
@@ -247,7 +243,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
 
         'sessions.create': {
             summary: 'Create a new session.',
-            requireAdmin: true,
+            requires: '/server/admin',
             http: { method: 'POST', path: '/sessions' },
             input: {
                 type: 'object',
@@ -279,7 +275,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
 
         'sessions.list': {
             summary: 'List all sessions.',
-            requireAdmin: true,
+            requires: '/server/admin',
             http: { method: 'GET', path: '/sessions' },
             input: { type: 'object', additionalProperties: false, properties: {} },
             handler: () => sessionCol.listDocs()
@@ -290,7 +286,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
         // JSON document. Only `config` is user-editable, and only via JSON Patch.
         'events.create': {
             summary: 'Create a new event.',
-            requireAdmin: true,
+            requires: '/server/admin',
             http: { method: 'POST', path: '/events' },
             input: {
                 type: 'object',
@@ -347,7 +343,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
 
         'events.list': {
             summary: 'List all events.',
-            requireAdmin: true,
+            requires: '/server/admin',
             http: { method: 'GET', path: '/events' },
             input: { type: 'object', additionalProperties: false, properties: {} },
             handler: () => eventCol.listDocs()
@@ -355,7 +351,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
 
         'events.delete': {
             summary: 'Delete an event.',
-            requireAdmin: true,
+            requires: '/server/admin',
             http: { method: 'DELETE', path: '/events/:eventId' },
             input: {
                 type: 'object',
@@ -375,7 +371,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                     + 'relative to the config root; our metadata is not '
                     + 'reachable. Returns the updated event, or null if no such '
                     + 'event.',
-            requireAdmin: true,
+            requires: '/server/admin',
             // `patch` is this action's *payload* — a single top-level value,
             // not one named field among several. Each interface renders that
             // naturally: REST puts it in the request body (as the mediaType
@@ -442,7 +438,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
 
         'accounts.get': {
             summary: 'Fetch a single account by id.',
-            requireAdmin: true,
+            requires: '/server/admin',
             http: { method: 'GET', path: '/accounts/:accountId' },
             input: {
                 type: 'object',
@@ -457,7 +453,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
 
         'accounts.list': {
             summary: 'List all accounts.',
-            requireAdmin: true,
+            requires: '/server/admin',
             http: { method: 'GET', path: '/accounts' },
             input: { type: 'object', additionalProperties: false, properties: {} },
             handler: () => accountCol.listDocs()

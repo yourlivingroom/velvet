@@ -28,14 +28,14 @@ export async function startServer({ actions, close, redeemInvite, makeContext },
     });
     await fastify.register(swaggerUi, { routePrefix: '/docs' });
 
-    let guard, requireAdmin, authenticate, closeAuth;
+    let guard, authenticate, challenge, closeAuth;
     let ctxFor = makeContext;
     if (authEnabled) {
         const auth = await registerAuth(fastify,
                 { publicUrl, rootPath, redeemInvite });
         guard = auth.requireAuth;
-        requireAdmin = auth.requireAdmin;
         authenticate = auth.authenticate;
+        challenge = auth.challenge;
         closeAuth = auth.close;
     }
     else {
@@ -46,7 +46,7 @@ export async function startServer({ actions, close, redeemInvite, makeContext },
     }
 
     registerRest(fastify, actions,
-            { requireAdmin, authenticate, makeContext: ctxFor });
+            { authenticate, challenge, makeContext: ctxFor });
     registerMcp(fastify, actions,
             { path: '/mcp', onRequest: guard, makeContext: ctxFor });
 
