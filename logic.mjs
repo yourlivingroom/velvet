@@ -70,13 +70,13 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
 
     function collection(store, prefix) {
         return {
-            async createDoc(extra) {
+            async createDoc(extra, opts = {}) {
                 const id = randomId(prefix);
                 const { newValue } = await store.edit(`${id}.json`, () => ({
                     id,
                     createdAt: new Date().toISOString(),
                     ...extra
-                }));
+                }), opts);
                 return newValue;
             },
             async getDoc(id) {
@@ -215,10 +215,12 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                     }
                 }
             },
+            // awaitIndex: an invite must be findable by its token the instant
+            // create returns, so redemption never races the index.
             handler: ({ email, note, grants }) => inviteCol.createDoc({
                 token: crypto.randomBytes(24).toString('hex'), // 192-bit secret
                 ...stripUndefined({ email, note, grants })
-            })
+            }, { awaitIndex: true })
         },
 
         'invites.get': {

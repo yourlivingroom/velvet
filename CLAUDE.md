@@ -182,8 +182,15 @@ version-controlled** — their edits live in the sibling dirs, uncommitted.
 Same query API either way (`store.indexes.<name>.get(key)`). velvet runs the
 **server live** and the **CLI inline**, so a one-shot CLI shares a `data/` dir
 with a live server without fighting for the lock. `invites` carries a `byToken`
-index; redemption uses it (eventual consistency is fine — a token is handed to a
-human before anyone redeems it).
+index; redemption uses it.
+
+**Strong-consistency escape hatch:** `store.edit(path, updater, { awaitIndex:
+true })` blocks until the live index reflects the write (the writer drives
+cardcatalog's `reindex(path)` directly — no waiting on the watcher). No-op when
+inline or unchanged. `invites.create` uses it, so a fresh invite is redeemable
+the instant create returns (removes the create-then-redeem race — no test poll).
+Without it, the live index is eventually consistent (watcher lag ~sub-second),
+which is fine where a human-in-the-loop delay precedes the read.
 
 Fixes made along the way:
 - pulp-db `get()` was broken (`fs.promises.read` → `readFile`); added `list()`
@@ -192,6 +199,7 @@ Fixes made along the way:
   *nothing* on a fresh dir — every lookup was null); a `shouldIndex(path, stats)`
   predicate so the caller filters files (pulp-db passes `p => p.endsWith('.json')`
   to skip write-file-atomic's temp files — indexing those double-registers a key
-  → `get()` throws "Multiple matches"); debug logs gated behind `CARDCATALOG_DEBUG`.
+  → `get()` throws "Multiple matches"); debug logs gated behind `CARDCATALOG_DEBUG`;
+  a `reindex(path)` method backing pulp-db's `awaitIndex`.
 - No native TTL; bootstrap codes use an `expiresAt` field + lazy sweep.
 ```
