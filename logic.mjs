@@ -143,6 +143,11 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
         };
     }
 
+    // You may act on your own account, or on any account if you're an admin.
+    function ownAccountOrAdmin(accountId, ctx) {
+        return ctx.can('/server/admin') || accountId === ctx.auth?.sub;
+    }
+
     // Resolve which (event, account) a reservation op targets, and authorize it.
     // Returns { acctId, key } or null (→ 404: no join permission, or no such
     // event — both hidden). Throws ClientError (403/400) for a caller trying to
@@ -164,17 +169,20 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
     }
 
     // Synthesize the guest list (RSVPs) for events, grouped by event id, in one
-    // scan of the reservations. `name` is a placeholder until accounts carry
-    // names. Used to fold "who's coming" into event reads.
+    // scan of the reservations (+ one of accounts, for names). Used to fold
+    // "who's coming" into event reads.
     async function guestListsByEvent() {
-        const rows = await reservations.list();
+        const [rows, accts] = await Promise.all([
+            reservations.list(), accountCol.listDocs()
+        ]);
+        const nameById = new Map(accts.map(a => [a.id, a.name]));
         const byEvent = new Map();
         for (const { value } of rows) {
             if (!value?.eventId) continue;
             if (!byEvent.has(value.eventId)) byEvent.set(value.eventId, []);
             byEvent.get(value.eventId).push({
                 id: value.accountId,
-                name: undefined,
+                name: nameById.get(value.accountId),
                 response: value.response,
                 guests: value.guests ?? []
             });
@@ -205,24 +213,27 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
         let inviteId;
         let inviteGrants = [];
         let entrypoint;
+        let inviteName;
         await invites.edit(match.path, (draft) => {
             if (!draft) return;
             inviteId = draft.id;
             // Snapshot plain copies — draft is an immer proxy revoked once
-            // edit() returns; we use these below. (entrypoint is a primitive.)
+            // edit() returns; we use these below. (primitives are safe.)
             inviteGrants = draft.grants ? [...draft.grants] : [];
             entrypoint = draft.entrypoint;
+            inviteName = draft.name;
             if (draft.accountId) { boundId = draft.accountId; return; }
             draft.accountId = newAccountId;
             boundId = newAccountId;
         });
         if (!boundId) return null;
         if (boundId === newAccountId) {
-            await accounts.edit(`${newAccountId}.json`, () => ({
+            await accounts.edit(`${newAccountId}.json`, () => stripUndefined({
                 id: newAccountId,
                 createdAt: new Date().toISOString(),
                 invite: inviteId,
-                grants: inviteGrants   // what this account is permitted to do
+                grants: inviteGrants,   // what this account is permitted to do
+                name: inviteName        // seed the display name (editable later)
             }));
         }
         return { accountId: boundId, entrypoint };
@@ -263,15 +274,21 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                         description: 'A same-origin relative path suggesting where '
                                 + 'the redeemer should start, e.g. '
                                 + '"/events/evt_123". Echoed back by redeem.'
+                    },
+                    name: {
+                        type: 'string',
+                        description: "Display name to seed on the redeemer's "
+                                + 'account (they can edit it later).'
                     }
                 }
             },
             // awaitIndex: an invite must be findable by its token the instant
             // create returns, so redemption never races the index.
-            handler: ({ email, note, grants, entrypoint }) =>
+            handler: ({ email, note, grants, entrypoint, name }) =>
                     inviteCol.createDoc({
                         token: crypto.randomBytes(24).toString('hex'), // 192-bit
-                        ...stripUndefined({ email, note, grants, entrypoint })
+                        ...stripUndefined(
+                                { email, note, grants, entrypoint, name })
                     }, { awaitIndex: true })
         },
 
@@ -518,9 +535,9 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
             }
         },
 
+        // Owner-or-admin: you can read/edit your own account; admin, any.
         'accounts.get': {
-            summary: 'Fetch a single account by id.',
-            requires: '/server/admin',
+            summary: 'Fetch an account (your own, or any with admin).',
             http: { method: 'GET', path: '/accounts/:accountId' },
             input: {
                 type: 'object',
@@ -530,7 +547,33 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                     accountId: { type: 'string', description: 'Account id (acct_…).' }
                 }
             },
-            handler: ({ accountId }) => accountCol.getDoc(accountId)
+            handler: ({ accountId }, ctx) =>
+                    ownAccountOrAdmin(accountId, ctx)
+                            ? accountCol.getDoc(accountId) : null
+        },
+
+        'accounts.update': {
+            summary: 'Edit an account — currently just its display name.',
+            http: { method: 'PATCH', path: '/accounts/:accountId' },
+            input: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['accountId'],
+                properties: {
+                    accountId: { type: 'string', description: 'Account id (acct_…).' },
+                    name: { type: 'string', description: 'Display name.' }
+                }
+            },
+            // Only `name` is settable here — never grants (no self-escalation).
+            handler: async ({ accountId, name }, ctx) => {
+                if (!ownAccountOrAdmin(accountId, ctx)) return null;   // 404 hide
+                const { newValue } = await accounts.edit(
+                        `${accountId}.json`, (draft) => {
+                            if (!draft) return;
+                            if (name !== undefined) draft.name = name;
+                        });
+                return newValue ?? null;
+            }
         },
 
         'accounts.list': {

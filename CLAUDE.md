@@ -82,15 +82,20 @@ one both positionally *and* by flag is an error. No other file needs editing.
   `guests` (array of possibly-empty names).
 - `invites` — an invite **is a token**. `invites.create` (admin) mints one; its
   `id` (`nvt_…`) is a non-secret handle, its `token` field is the secret you put
-  in a link, its `grants` are the permissions redemption confers, and an optional
+  in a link, its `grants` are the permissions redemption confers, an optional
   `entrypoint` (same-origin relative path) is echoed back at redeem as where to
-  start. `token`/`id` are separate so future expiry/single-use lives on the token
-  without touching account identity. **The token is shown once, in the create
-  response** — `invites.get`/`list` are admin-only and omit it (redemption finds
-  it via the byToken index, not a read). Redeeming binds an **account**.
+  start, and an optional `name` seeds the redeemer's account. `token`/`id` are
+  separate so future expiry/single-use lives on the token without touching
+  account identity. **The token is shown once, in the create response** —
+  `invites.get`/`list` are admin-only and omit it (redemption finds it via the
+  byToken index, not a read). Redeeming binds an **account**.
 - `accounts` — non-admin identities, auto-created (and bound to the invite) on
-  first redemption, carrying the invite's `grants`; a JWT's `sub` is an account
-  id. `sessions` — still a placeholder stand-in.
+  first redemption, carrying the invite's `grants` and `name`; a JWT's `sub` is
+  an account id. `accounts.get`/`update` (`PATCH /accounts/:accountId`) are
+  **owner-or-admin** (`ownAccountOrAdmin` helper); `update` sets only `name`
+  (never grants — no self-escalation). The guest list's `name` is sourced from
+  the account, so editing your name updates it everywhere. `sessions` — still a
+  placeholder stand-in.
 
 ## Auth model
 
