@@ -11,7 +11,7 @@ import { registerAuth } from './auth.mjs';
 //   - OpenAPI + docs UI  (@fastify/swagger, derived from those routes)
 //   - MCP endpoint       (registerMcp), guarded by JWT validation
 //   - Auth: RS + bootstrap issuer (registerAuth)
-export async function startServer({ actions, close, redeemInvite }, {
+export async function startServer({ actions, close, redeemInvite, makeContext }, {
     port = 3000,
     rootPath = 'data'
 } = {}) {
@@ -28,25 +28,27 @@ export async function startServer({ actions, close, redeemInvite }, {
     });
     await fastify.register(swaggerUi, { routePrefix: '/docs' });
 
-    let guard, requireAdmin, authenticate, isAdmin, closeAuth;
+    let guard, requireAdmin, authenticate, closeAuth;
+    let ctxFor = makeContext;
     if (authEnabled) {
         const auth = await registerAuth(fastify,
                 { publicUrl, rootPath, redeemInvite });
         guard = auth.requireAuth;
         requireAdmin = auth.requireAdmin;
         authenticate = auth.authenticate;
-        isAdmin = auth.isAdmin;
         closeAuth = auth.close;
     }
     else {
-        // Dev mode: no guards, and every caller counts as admin.
+        // Dev mode: no guards, and every caller is admin (grants `**`).
         fastify.log.warn('VELVET_AUTH=off; /mcp is UNAUTHENTICATED and all '
                 + 'callers are treated as admin.');
-        isAdmin = () => true;
+        ctxFor = () => makeContext({ roles: ['admin'] });
     }
 
-    registerRest(fastify, actions, { requireAdmin, authenticate, isAdmin });
-    registerMcp(fastify, actions, { path: '/mcp', onRequest: guard, isAdmin });
+    registerRest(fastify, actions,
+            { requireAdmin, authenticate, makeContext: ctxFor });
+    registerMcp(fastify, actions,
+            { path: '/mcp', onRequest: guard, makeContext: ctxFor });
 
     fastify.addHook('onClose', async () => {
         await close();

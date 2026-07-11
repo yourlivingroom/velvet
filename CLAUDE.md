@@ -20,6 +20,7 @@ cli.mjs     sbopts command tree; path params + payload -> positionals (or --flag
 rest.mjs    Fastify routes        (input schema -> params/body/querystring + validation)
 mcp.mjs     stateless Streamable-HTTP MCP endpoint (tools/list + tools/call == registry)
 auth.mjs    Resource Server (JWT validation) + bootstrap issuer + invite redeem
+permissions.mjs  pure path-glob matcher: can(grants, path)
 errors.mjs  ClientError(msg, statusCode) — the caller-error seam adapters map
 server.mjs  REST + OpenAPI(/docs) + MCP + auth in one Fastify process
 index.mjs   args -> CLI; else -> server
@@ -51,11 +52,11 @@ native JSON.
 Other keys:
 - `requireAdmin: true` — admin-only, enforced by a loud guard (see Auth).
 - `handler(input, ctx)` returns a value (serialized to all interfaces). `ctx =
-  { isAdmin, auth }` (auth = JWT claims or null; CLI/MCP callers are always
-  admin). `null` means "not found" → REST 404 — also the *quiet* way to hide a
-  resource from the unauthorized (return null when `!ctx.isAdmin`; see Auth).
-  Throw `ClientError(msg, status)` for caller errors → REST maps the status, MCP
-  an `isError` result, CLI stderr + exit 1.
+  { isAdmin, auth, grants, can(path), assertPermission(path) }` (see Permissions).
+  `null` means "not found" → REST 404 — also the *quiet* way to hide a resource
+  from the unpermitted (return null when `!ctx.can(...)`). Throw
+  `ClientError(msg, status)` for caller errors → REST maps the status, MCP an
+  `isError` result, CLI stderr + exit 1.
 
 CLI positionals (path params, then payload) fill left-to-right; giving the same
 one both positionally *and* by flag is an error. No other file needs editing.
@@ -66,15 +67,16 @@ one both positionally *and* by flag is an error. No other file needs editing.
   `createdAt`) from the **user's** `config` (arbitrary JSON). Only `config` is
   user-editable, via JSON Patch (RFC 6902) at `PATCH /events/:eventId/config`
   (`events.patch`, whose `payload` is the ops array). `GET /events/:eventId/config`
-  returns just config; `GET /events/:eventId` the whole doc. Event reads are
-  **admin-only — 404 to everyone else** (quiet-hide, see Auth).
+  (the user view) needs the `/events/:id/view` permission; `GET /events/:eventId`
+  (full doc) needs `/events/:id/admin`. Unpermitted → 404 (quiet-hide).
 - `invites` — an invite **is a token**. `invites.create` (admin) mints one; its
   `id` (`nvt_…`) is a non-secret handle, its `token` field is the secret you put
-  in a link. `token`/`id` are separate so future expiry/single-use lives on the
-  token without touching account identity. Redeeming binds an **account**.
+  in a link, and its `grants` are the permissions redemption confers. `token`/`id`
+  are separate so future expiry/single-use lives on the token without touching
+  account identity. Redeeming binds an **account**.
 - `accounts` — non-admin identities, auto-created (and bound to the invite) on
-  first redemption; a JWT's `sub` is an account id. `sessions` — still a
-  placeholder stand-in.
+  first redemption, carrying the invite's `grants`; a JWT's `sub` is an account
+  id. `sessions` — still a placeholder stand-in.
 
 ## Auth model
 
@@ -108,19 +110,36 @@ Non-admin auth: `POST /invites/redeem {token}` trades an invite token for a
 (`sub` = account id). Same signing key. REST-only (CLI/MCP are admin
 interfaces). Refresh preserves roles — no elevation.
 
-Authorization, two styles:
-- **Loud** — `requireAdmin` guards the admin surface: REST 401 anon / 403
-  authed-non-admin; MCP hides the tool from `tools/list` and returns `Forbidden`
-  on `tools/call`.
-- **Quiet** — for resources the public might probe by id, the handler returns
-  `null` (→ 404) to hide existence rather than challenge. Handlers get `ctx`;
-  REST best-effort-authenticates *every* route so `ctx` is populated even on
-  ungated ones.
+### Permissions
 
-**CLI is filesystem-trust = implicitly admin** (calls handlers directly with
-`ctx.isAdmin = true`). Admin = JWT `roles` includes `"admin"` (bootstrap tokens
-always do; redeemed invite tokens never do). Per-identity admins + external
-trusted issuers are still deferred (`roles` / the RS is the seam).
+A **permission** is a slash path (`/events/evt_123/view`). A **grant** is a glob
+over paths — literal segment, `*` (one segment), `**` (any number; a lone `**` =
+super-admin). `permissions.mjs` is the pure matcher (`can(grants, path)`).
+
+A caller's grants are resolved **per request** in `logic.makeContext(auth)`
+(hence revocable — not baked into the JWT): admin JWTs and the CLI → `['**']`; a
+redeemed account → its stored `grants`; anyone else → `[]`. The resulting `ctx`
+carries `can(path)` (boolean) and `assertPermission(path)` (throws
+`ClientError(403)`). All three adapters build ctx through `makeContext`; REST
+best-effort-authenticates *every* route so ctx is populated even on ungated ones.
+
+Two enforcement styles:
+- **Loud** — `requireAdmin` guard (REST 401 anon / 403 non-admin; MCP hides the
+  tool + `Forbidden`), and `ctx.assertPermission(...)` → 403. For the admin
+  surface.
+- **Quiet** — handler returns `null` (→ 404) when `!ctx.can(...)`, to hide a
+  resource the public might probe by id rather than challenge. Event reads do
+  this.
+
+**CLI is filesystem-trust = implicitly admin** (`makeContext` with a synthetic
+admin auth → `**`). Admin = JWT `roles` includes `"admin"` (bootstrap tokens
+always; redeemed invites never). `requireAdmin` is still a separate coarse gate;
+it could later become a permission check too. Per-identity admins + external
+trusted issuers remain deferred.
+
+**Gotcha:** never let an immer draft (or a sub-object of one) escape an `edit()`
+updater — immer revokes it on return, and touching it later throws "proxy that
+has been revoked". Snapshot a plain copy inside the updater (`[...draft.arr]`).
 
 ## Run
 

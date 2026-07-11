@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import pulpDb from '@livingroom/pulp-db';
 import jsonpatch from 'fast-json-patch';
 import { ClientError } from './errors.mjs';
+import { can } from './permissions.mjs';
 
 const { applyPatch } = jsonpatch;
 
@@ -106,6 +107,39 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
     // redemption. Not a registry action: it's public and issues no data of its
     // own — auth.mjs wraps it to mint a (non-admin) JWT. Returns { accountId }
     // or null (unknown token).
+    // Resolve a caller's grants (glob patterns). Admins (and the CLI) get `**`;
+    // a redeemed account gets whatever grants its invite conferred; anyone else
+    // gets nothing. Looked up per-request from the account store, so grants stay
+    // revocable rather than frozen into the JWT.
+    async function resolveGrants(auth) {
+        if (!auth) return [];
+        if (auth.roles?.includes('admin')) return ['**'];
+        if (auth.sub) {
+            const account = await accountCol.getDoc(auth.sub);
+            return account?.grants ?? [];
+        }
+        return [];
+    }
+
+    // Build the ctx handlers receive: identity + resolved permissions. `can` is
+    // the quiet check (caller decides how to react); `assertPermission` is the
+    // loud one (403 via ClientError).
+    async function makeContext(auth) {
+        const grants = await resolveGrants(auth);
+        return {
+            auth: auth ?? null,
+            isAdmin: auth?.roles?.includes('admin') ?? false,
+            grants,
+            can: (path) => can(grants, path),
+            assertPermission: (path) => {
+                if (!can(grants, path)) {
+                    throw new ClientError(
+                            `Forbidden: no permission for ${path}`, 403);
+                }
+            }
+        };
+    }
+
     // Redeem an invite by its secret token, via the byToken index (materialized
     // on-demand — see INVITE_INDEXES). (future: reject here if expired or
     // already consumed / single-use.)
@@ -127,9 +161,13 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
         const newAccountId = randomId('acct');
         let boundId;
         let inviteId;
+        let inviteGrants = [];
         await invites.edit(match.path, (draft) => {
             if (!draft) return;
             inviteId = draft.id;
+            // Snapshot a plain copy — draft.grants is an immer proxy that's
+            // revoked once edit() returns; we use it in the account write below.
+            inviteGrants = draft.grants ? [...draft.grants] : [];
             if (draft.accountId) { boundId = draft.accountId; return; }
             draft.accountId = newAccountId;
             boundId = newAccountId;
@@ -139,7 +177,8 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
             await accounts.edit(`${newAccountId}.json`, () => ({
                 id: newAccountId,
                 createdAt: new Date().toISOString(),
-                invite: inviteId
+                invite: inviteId,
+                grants: inviteGrants   // what this account is permitted to do
             }));
         }
         return { accountId: boundId };
@@ -166,12 +205,19 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                     note: {
                         type: 'string',
                         description: 'Freeform note stored on the invite.'
+                    },
+                    grants: {
+                        type: 'array',
+                        items: { type: 'string' },
+                        description: 'Permission grants (globs) conferred on the '
+                                + 'account when this invite is redeemed, e.g. '
+                                + '["/events/evt_123/view"].'
                     }
                 }
             },
-            handler: ({ email, note }) => inviteCol.createDoc({
+            handler: ({ email, note, grants }) => inviteCol.createDoc({
                 token: crypto.randomBytes(24).toString('hex'), // 192-bit secret
-                ...stripUndefined({ email, note })
+                ...stripUndefined({ email, note, grants })
             })
         },
 
@@ -269,10 +315,12 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                     eventId: { type: 'string', description: 'Event id (evt_…).' }
                 }
             },
-            // The full event doc is admin info (our metadata + config). To the
-            // unauthorized we return null → 404: hide existence, don't 401.
+            // The full event doc is admin info (our metadata + config): needs
+            // the event's /admin permission. To the unpermitted we return null
+            // → 404: hide existence, don't challenge.
             handler: ({ eventId }, ctx) =>
-                    ctx.isAdmin ? eventCol.getDoc(eventId) : null
+                    ctx.can(`/events/${eventId}/admin`)
+                            ? eventCol.getDoc(eventId) : null
         },
 
         'events.getConfig': {
@@ -286,8 +334,10 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                     eventId: { type: 'string', description: 'Event id (evt_…).' }
                 }
             },
+            // The user-facing view: needs the event's /view permission (an
+            // invited viewer has it; so does any admin via `**`).
             handler: async ({ eventId }, ctx) => {
-                if (!ctx.isAdmin) return null;   // 404 to the unauthorized
+                if (!ctx.can(`/events/${eventId}/view`)) return null;
                 const event = await eventCol.getDoc(eventId);
                 return event === null ? null : event.config;
             }
@@ -415,6 +465,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
     return {
         actions,
         redeemInvite,
+        makeContext,
         async close() {
             await invites.close();
             await sessions.close();

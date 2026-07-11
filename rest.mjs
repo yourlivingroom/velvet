@@ -10,7 +10,7 @@ import { ClientError } from './errors.mjs';
 // the handler still learns who's calling — that's how a handler can quietly
 // 404 the unauthorized (hide existence) rather than challenge them.
 export function registerRest(fastify, actions,
-        { requireAdmin, authenticate, isAdmin = () => false } = {}) {
+        { requireAdmin, authenticate, makeContext } = {}) {
     // Populate request.auth from the Bearer token if present; never rejects.
     const attachAuth = authenticate
             ? async (request) => { request.auth = await authenticate(request); }
@@ -95,10 +95,7 @@ export function registerRest(fastify, actions,
                     Object.assign(input, hasBody ? request.body : request.query);
                 }
 
-                const ctx = {
-                    auth: request.auth ?? null,
-                    isAdmin: isAdmin(request.auth)
-                };
+                const ctx = await makeContext(request.auth ?? null);
 
                 let result;
                 try {

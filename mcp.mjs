@@ -20,7 +20,7 @@ export function registerMcp(fastify, actions, {
     path = '/mcp',
     serverInfo = { name: 'velvet', version: '1.0.0' },
     onRequest,         // optional Fastify guard (e.g. requireAuth)
-    isAdmin = () => true   // resolve admin-ness of request.auth; open by default
+    makeContext        // (auth) -> ctx { isAdmin, can, ... }
 } = {}) {
     const tools = Object.entries(actions).map(([n, a]) => toMcpTool(n, a));
 
@@ -84,10 +84,7 @@ export function registerMcp(fastify, actions, {
 
     fastify.post(path, { ...(onRequest ? { onRequest } : {}) }, async (request, reply) => {
         const body = request.body;
-        const ctx = {
-            auth: request.auth ?? null,
-            isAdmin: isAdmin(request.auth)
-        };
+        const ctx = await makeContext(request.auth ?? null);
 
         // Batched requests.
         if (Array.isArray(body)) {

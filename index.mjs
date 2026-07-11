@@ -17,7 +17,8 @@ async function main() {
     // never grabs the LevelDB lock and can run beside a live server.
     const logic = velvetLogic(rootPath, { inline: true });
     try {
-        await buildCli(logic.actions).run(argv);
+        await buildCli(logic.actions, { makeContext: logic.makeContext })
+                .run(argv);
     }
     finally {
         await logic.close();

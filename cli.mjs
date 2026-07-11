@@ -10,7 +10,7 @@ import { ClientError } from './errors.mjs';
 // order) followed by the action's payload, if it has one. Each slot can be
 // filled positionally OR by its `--name` flag; giving one both ways is an
 // error. Everything else stays a flag.
-export function buildCli(actions, { name = 'velvet' } = {}) {
+export function buildCli(actions, { name = 'velvet', makeContext } = {}) {
     const groups = {};
     for (const [full, action] of Object.entries(actions)) {
         const [ns, verb] = full.split('.');
@@ -44,7 +44,8 @@ export function buildCli(actions, { name = 'velvet' } = {}) {
                 flags,
                 ...(args.length ? { args } : {}),
                 run: ({ flags, positionals }) =>
-                        dispatch(action, flags, positionals, slots, required)
+                        dispatch(action, flags, positionals, slots, required,
+                                makeContext)
             };
         }
         commands[ns] = { summary: `Manage ${ns}.`, commands: sub };
@@ -56,7 +57,7 @@ export function buildCli(actions, { name = 'velvet' } = {}) {
     });
 }
 
-async function dispatch(action, flags, positionals, slots, required) {
+async function dispatch(action, flags, positionals, slots, required, makeContext) {
     try {
         if (positionals.length > slots.length) {
             throw new ClientError(
@@ -81,8 +82,9 @@ async function dispatch(action, flags, positionals, slots, required) {
         }
 
         const input = coerceCliInput(action.input, merged);
-        // The CLI is an admin-only interface (filesystem trust).
-        const result = await action.handler(input, { isAdmin: true, auth: null });
+        // The CLI is an admin-only interface (filesystem trust): admin ctx (`**`).
+        const ctx = await makeContext({ roles: ['admin'] });
+        const result = await action.handler(input, ctx);
         process.stdout.write(JSON.stringify(result, null, 2) + '\n');
     }
     catch (e) {
