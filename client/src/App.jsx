@@ -15,10 +15,33 @@ function csrfHeaders(method) {
     const m = document.cookie.match(/(?:^|;\s*)velvet_csrf=([^;]*)/);
     return m ? { 'X-CSRF-Token': decodeURIComponent(m[1]) } : {};
 }
-const api = (path, opts = {}) => fetch(path, {
-    ...opts,
-    headers: { Accept: 'application/json', ...csrfHeaders(opts.method), ...opts.headers }
-}).then((r) => r.json());
+
+// One shared in-flight refresh, so a burst of 401s triggers a single
+// POST /session/refresh (which re-mints the access cookie server-side).
+let refreshing = null;
+function refreshSession() {
+    if (!refreshing) {
+        refreshing = fetch('/session/refresh', {
+            method: 'POST', headers: { Accept: 'application/json' }
+        }).then((r) => r.ok).catch(() => false).finally(() => { refreshing = null; });
+    }
+    return refreshing;
+}
+
+// On a 401 the access cookie has likely expired; try one transparent refresh and
+// replay the request. If refresh fails (refresh cookie gone/expired) the 401
+// stands and the caller falls through to the logged-out path.
+async function api(path, opts = {}) {
+    const send = () => fetch(path, {
+        ...opts,
+        headers: { Accept: 'application/json', ...csrfHeaders(opts.method), ...opts.headers }
+    });
+    let r = await send();
+    if (r.status === 401 && path !== '/session/refresh' && await refreshSession()) {
+        r = await send();
+    }
+    return r.json();
+}
 
 // Who's signed in — resolved once from GET /session (the server decodes the
 // cookie; the client can't). `{ accountId, isAdmin }`, or null when logged out.

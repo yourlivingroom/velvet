@@ -29,8 +29,9 @@ import { SignJWT, jwtVerify } from 'jose';
 
 const CODE_TTL_MS = 3 * 60 * 1000;
 const ACCESS_TTL = '1h';
-const ACCESS_TTL_S = 3600;      // seconds — matches ACCESS_TTL, for cookie Max-Age
+const ACCESS_TTL_S = 3600;          // seconds — matches ACCESS_TTL, for cookie Max-Age
 const REFRESH_TTL = '30d';
+const REFRESH_TTL_S = 30 * 24 * 3600;   // matches REFRESH_TTL
 const REDEEM_LIMIT_PER_MIN = 20;
 
 // The BFF session cookie: the browser's *only* credential. HttpOnly (invisible
@@ -45,6 +46,12 @@ const SESSION_COOKIE = 'velvet_session';
 // (cross-origin), and can't set the header cross-site (CORS preflight), so a
 // forged request can't present a matching token. See csrfGuard.
 const CSRF_COOKIE = 'velvet_csrf';
+
+// The refresh cookie: long-lived, HttpOnly, and **path-scoped to
+// /session/refresh** so it rides only refresh requests, not every API call. Lets
+// an active session outlive the short access token without re-login. Never
+// reaches page JS.
+const REFRESH_COOKIE = 'velvet_refresh';
 
 function base64url(buf) {
     return buf.toString('base64')
@@ -276,17 +283,27 @@ export async function registerAuth(fastify,
         secure: issuer.startsWith('https'),
         maxAge: ACCESS_TTL_S
     });
+    const refreshCookieOpts = () => ({
+        httpOnly: true,
+        sameSite: 'lax',
+        path: '/session/refresh',   // scoped: sent only to the refresh endpoint
+        secure: issuer.startsWith('https'),
+        maxAge: REFRESH_TTL_S
+    });
 
-    // Set both cookies at login: the HttpOnly session JWT, and the readable CSRF
-    // token bound to this session's sub.
-    const setSession = (reply, accessToken, sub) => {
-        reply.setCookie(SESSION_COOKIE, accessToken, sessionCookieOpts());
+    // Establish a session: the HttpOnly access JWT, the readable CSRF token bound
+    // to `sub`, and the path-scoped refresh JWT. Called at login *and* on refresh
+    // (sliding — the refresh window renews each time).
+    const setSession = (reply, { access, refresh, sub }) => {
+        reply.setCookie(SESSION_COOKIE, access, sessionCookieOpts());
         reply.setCookie(CSRF_COOKIE, csrfToken(sub),
-                { ...sessionCookieOpts(), httpOnly: false });  // JS must read it
+                { ...sessionCookieOpts(), httpOnly: false });   // JS must read it
+        reply.setCookie(REFRESH_COOKIE, refresh, refreshCookieOpts());
     };
     const clearSession = (reply) => {
         reply.clearCookie(SESSION_COOKIE, { path: '/' });
         reply.clearCookie(CSRF_COOKIE, { path: '/' });
+        reply.clearCookie(REFRESH_COOKIE, { path: '/session/refresh' });
     };
 
     // onRequest guard for state-changing REST routes (wired in by rest.mjs after
@@ -333,8 +350,9 @@ export async function registerAuth(fastify,
                 if (!await redeemCode((request.body ?? {}).code)) {
                     return reply.code(401).send({ error: 'invalid_code' });
                 }
-                const { access_token } = await issueTokens();
-                setSession(reply, access_token, 'bootstrap-admin');
+                const { access_token, refresh_token } = await issueTokens();
+                setSession(reply, { access: access_token,
+                        refresh: refresh_token, sub: 'bootstrap-admin' });
                 return { ok: true };
             });
 
@@ -351,8 +369,10 @@ export async function registerAuth(fastify,
                 if (!result) {
                     return reply.code(401).send({ error: 'invalid_token' });
                 }
-                const { access_token } = await issueTokens(result.accountId, []);
-                setSession(reply, access_token, result.accountId);
+                const { access_token, refresh_token } =
+                        await issueTokens(result.accountId, []);
+                setSession(reply, { access: access_token,
+                        refresh: refresh_token, sub: result.accountId });
                 return { entrypoint: result.entrypoint };
             });
 
@@ -371,11 +391,41 @@ export async function registerAuth(fastify,
                 };
             });
 
-    // Logout: drop both cookies.
+    // Logout: drop the cookies.
     fastify.delete('/session', { schema: { hide: true } },
             async (request, reply) => {
                 clearSession(reply);
                 return { ok: true };
+            });
+
+    // Refresh: trade the long-lived refresh cookie for a fresh access cookie so
+    // an active session outlives the short access token — invisibly, no re-login.
+    // Sliding (the refresh window renews too). No CSRF token needed: the refresh
+    // cookie is SameSite=Lax + path-scoped, and a forced refresh only renews the
+    // victim's *own* session — nothing leaks to an attacker.
+    fastify.post('/session/refresh', { schema: { hide: true } },
+            async (request, reply) => {
+                const rt = request.cookies?.[REFRESH_COOKIE];
+                if (!rt) return reply.code(401).send({ error: 'no_refresh' });
+                let payload;
+                try {
+                    ({ payload } = await jwtVerify(rt, key,
+                            { issuer, audience: refreshAud }));
+                    if (payload.typ !== 'refresh') throw new Error('not refresh');
+                }
+                catch {
+                    clearSession(reply);   // stale/invalid — stop retrying it
+                    return reply.code(401).send({ error: 'invalid_refresh' });
+                }
+                const roles = payload.roles ?? [];
+                const { access_token, refresh_token } =
+                        await issueTokens(payload.sub, roles);
+                setSession(reply, { access: access_token,
+                        refresh: refresh_token, sub: payload.sub });
+                return {
+                    accountId: payload.sub,
+                    isAdmin: roles.includes('admin')
+                };
             });
 
     fastify.get('/.well-known/oauth-protected-resource', { schema: { hide: true } },

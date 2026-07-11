@@ -177,7 +177,8 @@ same-origin. Two distinct auth surfaces:
   - `POST /session/invite {token}` → non-admin cookie; returns only `{entrypoint}`.
   - `GET /session` → `{ accountId, isAdmin }` (or 401) — the SPA's replacement for
     decoding the JWT client-side.
-  - `DELETE /session` → clears the cookie (logout).
+  - `POST /session/refresh` → mints a fresh access cookie from the refresh cookie.
+  - `DELETE /session` → clears the cookies (logout).
 
 `authenticate(request, { cookie })` reads Bearer always, and the cookie **only
 when `cookie:true`** — `rest.mjs` opts in (the SPA's data surface), but **`/mcp`
@@ -195,9 +196,19 @@ requests with no session cookie — so only browser cookie-writes are gated. A
 cross-site forgery carries the session cookie automatically but can't read the
 token nor set the header (CORS preflight), so it 403s. The `/session/*` routes
 themselves are raw (not through `csrfGuard`); logout is `DELETE` (preflighted,
-so naturally CSRF-safe). No refresh flow yet — when the cookie's JWT expires you
-re-log; the issued refresh token is the obvious next step (the BFF can rotate it
-server-side, invisibly).
+so naturally CSRF-safe).
+
+**Refresh (server-side, invisible).** Login also sets a long-lived (`30d`),
+HttpOnly **`velvet_refresh`** cookie **path-scoped to `/session/refresh`** (so it
+rides only refresh requests, not every API call). `POST /session/refresh` trades
+it for a fresh access cookie (and re-issues the refresh cookie — sliding window),
+preserving `roles`. It needs no CSRF token: the cookie is `SameSite=Lax` +
+path-scoped, and a forced refresh only renews the victim's *own* session. Client
+side, `api()` transparently retries: on a `401` it fires one shared
+`/session/refresh` (single-flight) and replays the request — so an active session
+outlives the 1h access token without re-login. An invalid/absent refresh 401s and
+clears the cookies, and the caller falls through to the logged-out page. (The
+separate `/oauth/token` refresh grant still serves MCP Bearer clients.)
 
 ### Permissions
 
@@ -293,9 +304,9 @@ double as client routes via the negotiation above):
   comes from `GET /session`
   (not a client-side token decode): `<App>` resolves it once into a
   `SessionContext` (`useSession()`); `undefined`=loading, `null`=logged out →
-  **"You are not logged in"** page, object=`{ accountId, isAdmin }`. When the
-  cookie's JWT expires, `/session` 401s → the same page (re-log at `/admin`);
-  refresh is still the obvious follow-up (now server-side, via the BFF).
+  **"You are not logged in"** page, object=`{ accountId, isAdmin }`. Access-token
+  expiry is handled by `api()`'s transparent refresh (see Refresh above); only a
+  dead refresh token lands you on the logged-out page (re-log at `/admin`).
 
 `velvet --dev` (`dev.mjs`) runs both halves hot-reloading: the backend (env
 `VELVET_DEV=1` → it skips serving assets) plus the Vite dev server (React HMR)
