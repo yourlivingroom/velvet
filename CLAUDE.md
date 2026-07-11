@@ -67,9 +67,14 @@ one both positionally *and* by flag is an error. No other file needs editing.
 - `events` — stored doc separates **our** metadata (top-level `id` = `evt_…`,
   `createdAt`) from the **user's** `config` (arbitrary JSON). Only `config` is
   user-editable, via JSON Patch (RFC 6902) at `PATCH /events/:eventId/config`
-  (`events.patch`, whose `payload` is the ops array). `GET /events/:eventId/config`
-  (the user view) needs the `/events/:id/view` permission; `GET /events/:eventId`
-  (full doc) needs `/events/:id/admin`. Unpermitted → 404 (quiet-hide).
+  (`events.patch`, whose `payload` is the ops array). `GET /events/:eventId` is
+  **graded**: admins (`/events/:id/admin`) get the full doc; participants
+  (`/view` *or* `/join`) get a whitelisted user view (`id`, `config`,
+  `guestList`); anyone else → 404 (hide). Both `events.get` and `events.list`
+  synthesize a **`guestList`** from reservations (one scan grouped by event) —
+  entries `{ id, name?, response?, guests }` (Facebook-style: participants see
+  who's coming). `GET /events/:eventId/config` (bare config, `/view`) still
+  exists but is largely subsumed by the graded get.
 - `reservations` — an account's RSVP to an event, one per (event, account),
   keyed `<eventId>~<accountId>`. `PUT/GET/DELETE /events/:eventId/reservation`
   gated (in-handler) on `/events/:id/join`; `accountId` defaults to the caller,

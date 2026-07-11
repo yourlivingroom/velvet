@@ -163,6 +163,25 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
         return { acctId, key: `${eventId}~${acctId}` };
     }
 
+    // Synthesize the guest list (RSVPs) for events, grouped by event id, in one
+    // scan of the reservations. `name` is a placeholder until accounts carry
+    // names. Used to fold "who's coming" into event reads.
+    async function guestListsByEvent() {
+        const rows = await reservations.list();
+        const byEvent = new Map();
+        for (const { value } of rows) {
+            if (!value?.eventId) continue;
+            if (!byEvent.has(value.eventId)) byEvent.set(value.eventId, []);
+            byEvent.get(value.eventId).push({
+                id: value.accountId,
+                name: undefined,
+                response: value.response,
+                guests: value.guests ?? []
+            });
+        }
+        return byEvent;
+    }
+
     // Redeem an invite by its secret token, via the byToken index (materialized
     // on-demand — see INVITE_INDEXES). (future: reject here if expired or
     // already consumed / single-use.)
@@ -345,7 +364,10 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
         },
 
         'events.get': {
-            summary: 'Fetch a single event by id.',
+            summary: 'Fetch an event — graded by permission.',
+            description: 'Admins (/events/:id/admin) get the full doc + guest '
+                    + 'list; participants (/view or /join) get the user view '
+                    + '(id, config, guestList); anyone else 404s (hidden).',
             http: { method: 'GET', path: '/events/:eventId' },
             input: {
                 type: 'object',
@@ -355,12 +377,23 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                     eventId: { type: 'string', description: 'Event id (evt_…).' }
                 }
             },
-            // The full event doc is admin info (our metadata + config): needs
-            // the event's /admin permission. To the unpermitted we return null
-            // → 404: hide existence, don't challenge.
-            handler: ({ eventId }, ctx) =>
-                    ctx.can(`/events/${eventId}/admin`)
-                            ? eventCol.getDoc(eventId) : null
+            handler: async ({ eventId }, ctx) => {
+                const admin = ctx.can(`/events/${eventId}/admin`);
+                const participant = admin
+                        || ctx.can(`/events/${eventId}/view`)
+                        || ctx.can(`/events/${eventId}/join`);
+                if (!participant) return null;          // 404: hide existence
+
+                const event = await eventCol.getDoc(eventId);
+                if (event === null) return null;
+                const guestList = (await guestListsByEvent()).get(eventId) ?? [];
+
+                // Admins see our metadata; everyone else a whitelisted user view
+                // (so new admin-only fields never leak by default).
+                return admin
+                        ? { ...event, guestList }
+                        : { id: event.id, config: event.config, guestList };
+            }
         },
 
         'events.getConfig': {
@@ -388,7 +421,14 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
             requires: '/server/admin',
             http: { method: 'GET', path: '/events' },
             input: { type: 'object', additionalProperties: false, properties: {} },
-            handler: () => eventCol.listDocs()
+            handler: async () => {
+                const [events, lists] = await Promise.all([
+                    eventCol.listDocs(), guestListsByEvent()
+                ]);
+                return events.map(e => ({
+                    ...e, guestList: lists.get(e.id) ?? []
+                }));
+            }
         },
 
         'events.delete': {
