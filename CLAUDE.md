@@ -168,8 +168,10 @@ the persisted key, not persisted), `VELVET_DATA` (default `data`), `VELVET_AUTH=
 
 ## Dogfooding pulp-db + cardcatalog
 
-Exercises `@livingroom/pulp-db` and `@livingroom/cardcatalog`. **Neither is
-version-controlled** — their edits live in the sibling dirs, uncommitted.
+Exercises `@livingroom/pulp-db` and `@livingroom/cardcatalog`, which are used
+only by velvet and shaped alongside it. They're **intentionally left uncommitted
+for now** (they have no git repo) — we edit them in place to bring their feature
+set into focus, and will version them once it settles. No need to flag this.
 
 **Index materialization is a choice.** An index is a *definition* (a
 `process`/`emit` fn) plus a *materialization*:
