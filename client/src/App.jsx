@@ -133,6 +133,14 @@ const rsvpBtn = {
     padding: '.5rem 1.1rem'
 };
 const rsvpBtnActive = { background: '#2563eb', color: '#fff' };
+const tabBtnStyle = {
+    border: 'none', background: 'none', cursor: 'pointer', font: 'inherit',
+    padding: '.5rem 0', marginBottom: -1, color: '#666',
+    borderBottom: '2px solid transparent'
+};
+const tabBtnActive = {
+    color: 'inherit', fontWeight: 600, borderBottomColor: '#2563eb'
+};
 
 // Deterministic hue from a string, so a given name always gets the same
 // placeholder color.
@@ -483,21 +491,132 @@ function EventDetail({ id }) {
 
             {event.access?.admin && <AdminActions eventId={id} />}
 
-            <h2 style={dim}>Who's coming ({guests.length})</h2>
-            {guests.length === 0 ? (
-                <p>No RSVPs yet.</p>
+            <Rsvps guests={guests} eventId={id} />
+        </main>
+    );
+}
+
+// The RSVP roster, split by response. "Who's Going" holds the going responses
+// then the maybes (tagged "(maybe going)"); a second tab holds the "Can't go"
+// declines. (No-response invitees aren't shown yet — that's the fuller roster.)
+function Rsvps({ guests, eventId }) {
+    const [tab, setTab] = useState('going'); // 'going' | 'cant'
+    const going = guests.filter((g) => g.response === 'going');
+    const maybe = guests.filter((g) => g.response === 'maybe');
+    const notGoing = guests.filter((g) => g.response === 'not-going');
+
+    const row = (g, note) => (
+        <li key={g.id} style={{ margin: '.4rem 0' }}>
+            <UserLink id={g.id} name={g.name} avatar={g.avatar} event={eventId} />
+            {note ? <span style={dim}> {note}</span> : null}
+            {g.guests?.length ? <span style={dim}> (+{g.guests.length})</span> : null}
+        </li>
+    );
+    const tabBtn = (key, text, count) => (
+        <button onClick={() => setTab(key)}
+            style={{ ...tabBtnStyle, ...(tab === key ? tabBtnActive : {}) }}>
+            {text} ({count})
+        </button>
+    );
+
+    return (
+        <div style={{ marginTop: '1.5rem' }}>
+            <div style={{ display: 'flex', gap: '1.25rem', borderBottom: '1px solid #eee' }}>
+                {tabBtn('going', "Who's Going", going.length + maybe.length)}
+                {tabBtn('cant', "Can't go", notGoing.length)}
+            </div>
+            {tab === 'going' ? (
+                going.length + maybe.length === 0 ? (
+                    <p>No RSVPs yet.</p>
+                ) : (
+                    <ul>
+                        {going.map((g) => row(g))}
+                        {maybe.map((g) => row(g, '(maybe going)'))}
+                    </ul>
+                )
             ) : (
-                <ul>
-                    {guests.map((g) => (
-                        <li key={g.id} style={{ margin: '.4rem 0' }}>
-                            <UserLink id={g.id} name={g.name} avatar={g.avatar} event={id} />
-                            {' — '}{g.response ?? 'no response'}
-                            {g.guests?.length ? ` (+${g.guests.length})` : ''}
-                        </li>
+                notGoing.length === 0 ? (
+                    <p>Nobody has declined.</p>
+                ) : (
+                    <ul>{notGoing.map((g) => row(g))}</ul>
+                )
+            )}
+        </div>
+    );
+}
+
+// Admin-only user-management page (/events/:id/users): every account associated
+// with the event — including those who haven't responded — with their current
+// RSVP and a control to revoke their invite (remove them from the event).
+function EventUsers({ eventId }) {
+    const session = useSession();
+    const [roster, setRoster] = useState(undefined); // undefined=loading, null=no access
+    const load = () => api(`/events/${eventId}/members`)
+        .then((r) => setRoster(Array.isArray(r) ? r : null))
+        .catch(() => setRoster(null));
+    useEffect(() => { load(); }, [eventId]);
+
+    const revoke = async (accountId) => {
+        await api(`/events/${eventId}/members/${accountId}`, { method: 'DELETE' });
+        await load();
+    };
+
+    if (roster === undefined) {
+        return <main style={wrap}><p>Loading…</p></main>;
+    }
+    if (roster === null) {
+        return (
+            <main style={wrap}>
+                <p><a href={`/events/${eventId}`}>← event</a></p>
+                <p>You don't have access to manage this event.</p>
+            </main>
+        );
+    }
+    return (
+        <main style={wrap}>
+            <p><a href={`/events/${eventId}`}>← event</a></p>
+            <h1>User management</h1>
+            {roster.length === 0 ? (
+                <p>No one is associated with this event yet.</p>
+            ) : (
+                <ul style={{ listStyle: 'none', padding: 0 }}>
+                    {roster.map((u) => (
+                        <RosterRow key={u.id} user={u} eventId={eventId}
+                            onRevoke={revoke}
+                            canRevoke={u.id !== session.accountId} />
                     ))}
                 </ul>
             )}
         </main>
+    );
+}
+
+// One roster row: identity + RSVP status, with a two-click "Revoke invite" (this
+// removes their event access and RSVP — so confirm before firing).
+function RosterRow({ user, eventId, onRevoke, canRevoke }) {
+    const [confirming, setConfirming] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const status = RSVP_LABELS[user.response] ?? 'No response';
+    return (
+        <li style={{ display: 'flex', alignItems: 'center', gap: '.75rem', margin: '.6rem 0' }}>
+            <UserLink id={user.id} name={user.name} avatar={user.avatar} event={eventId} />
+            <span style={dim}>
+                {status}{user.guests?.length ? ` (+${user.guests.length})` : ''}
+            </span>
+            {canRevoke && (
+                <span style={{ marginLeft: 'auto' }}>
+                    {confirming ? (
+                        <>
+                            <button onClick={async () => { setBusy(true); await onRevoke(user.id); }}
+                                disabled={busy}>Revoke</button>{' '}
+                            <button onClick={() => setConfirming(false)} disabled={busy}>Cancel</button>
+                        </>
+                    ) : (
+                        <button onClick={() => setConfirming(true)}>Revoke invite</button>
+                    )}
+                </span>
+            )}
+        </li>
     );
 }
 
@@ -508,8 +627,9 @@ function AdminActions({ eventId }) {
             <summary style={{ ...dim, cursor: 'pointer', fontWeight: 600 }}>
                 Admin actions
             </summary>
-            <div style={{ padding: '.75rem 0' }}>
+            <div style={{ padding: '.75rem 0', display: 'flex', gap: '1rem', alignItems: 'center' }}>
                 <button onClick={() => setInviting(true)}>Create invite</button>
+                <a href={`/events/${eventId}/users`}>User management</a>
             </div>
             {inviting && (
                 <CreateInviteModal eventId={eventId} onClose={() => setInviting(false)} />
@@ -946,11 +1066,13 @@ function Shell({ path }) {
     if (!session) return <NotLoggedIn />;
 
     const account = path.match(/^\/accounts\/([^/]+)$/);
+    const eventUsers = path.match(/^\/events\/([^/]+)\/users$/);
     const event = path.match(/^\/events\/([^/]+)$/);
     return (
         <SessionContext.Provider value={session}>
             <ProfileMenu />
             {account ? <AccountPage accountId={account[1]} />
+                : eventUsers ? <EventUsers eventId={eventUsers[1]} />
                 : event ? <EventDetail id={event[1]} />
                 : <EventList />}
         </SessionContext.Provider>

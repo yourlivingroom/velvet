@@ -730,6 +730,103 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
             }
         },
 
+        // Admin-only roster: every account associated with the event, resolved,
+        // WITH the non-responders the public guest list omits. This is the
+        // "haven't responded" visibility that stays admin-only (see events.get,
+        // which hides `members` from the participant view).
+        'events.members': {
+            summary: "List an event's members with their RSVP status (admin).",
+            description: 'Event-admin-only roster of every account associated '
+                    + 'with the event (invited or administrating), each with '
+                    + 'name, avatar, and current `response` — going/maybe/'
+                    + 'not-going, or null for members who have not responded yet '
+                    + '(the public guest list omits those). Sorted by name.',
+            http: { method: 'GET', path: '/events/:eventId/members' },
+            input: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['eventId'],
+                properties: {
+                    eventId: { type: 'string', description: 'Event id (evt_…).' }
+                }
+            },
+            handler: async ({ eventId }, ctx) => {
+                ctx.assertPermission(`/events/${eventId}/admin`);
+                const event = await eventCol.getDoc(eventId);
+                if (!event) return null;
+                const [accts, resvRows] = await Promise.all([
+                    accountCol.listDocs(), reservations.list()
+                ]);
+                const acctById = new Map(accts.map((a) => [a.id, a]));
+                const respByAcct = new Map();
+                for (const { value } of resvRows) {
+                    if (value?.eventId === eventId) {
+                        respByAcct.set(value.accountId, value);
+                    }
+                }
+                const roster = (event.members ?? []).map((id) => {
+                    const a = acctById.get(id);
+                    const r = respByAcct.get(id);
+                    return {
+                        id,
+                        name: a?.name ?? null,
+                        avatar: a?.avatar ?? null,
+                        response: r?.response ?? null,   // null = hasn't responded
+                        guests: r?.guests ?? []
+                    };
+                });
+                roster.sort((x, y) => (x.name ?? '').localeCompare(y.name ?? ''));
+                return roster;
+            }
+        },
+
+        // Remove a member from an event (revoke their invite): strip every grant
+        // scoped to this event, drop them from members[] (byUser index), and
+        // delete their reservation — a full removal. Event-admin gated.
+        'events.removeMember': {
+            summary: 'Remove a member from an event (revoke their invite).',
+            description: "Revokes all of the account's grants for this event "
+                    + '(/view, /join, /admin), removes it from the event member '
+                    + 'list, and deletes its reservation — fully removing the '
+                    + 'account from the event. Event-admin gated. You cannot '
+                    + 'remove yourself.',
+            http: {
+                method: 'DELETE',
+                path: '/events/:eventId/members/:accountId'
+            },
+            input: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['eventId', 'accountId'],
+                properties: {
+                    eventId: { type: 'string', description: 'Event id (evt_…).' },
+                    accountId: { type: 'string', description: 'Account id (acct_…).' }
+                }
+            },
+            handler: async ({ eventId, accountId }, ctx) => {
+                ctx.assertPermission(`/events/${eventId}/admin`);
+                if (accountId === ctx.auth?.sub) {
+                    throw new ClientError(
+                            "You can't remove yourself from the event.", 400);
+                }
+                const account = await accountCol.getDoc(accountId);
+                if (!account) return null;   // 404
+                // Strip every grant scoped to this event.
+                await accounts.edit(`${accountId}.json`, (draft) => {
+                    if (!draft) return;
+                    draft.grants = (draft.grants ?? [])
+                            .filter((g) => eventIdFromGrant(g) !== eventId);
+                });
+                // Drop from the member list (byUser index) + delete the RSVP.
+                await removeEventMember(eventId, accountId);
+                await reservations.edit(`${eventId}~${accountId}.json`,
+                        (draft, { delete: del }) => {
+                            if (draft !== undefined) del();
+                        });
+                return { id: accountId, removed: true };
+            }
+        },
+
         // Owner-or-admin: you can read/edit your own account; admin, any.
         'accounts.get': {
             summary: 'Fetch an account — full for owner/admin, public view else.',

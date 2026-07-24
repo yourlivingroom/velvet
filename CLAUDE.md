@@ -114,8 +114,16 @@ one both positionally *and* by flag is an error. No other file needs editing.
   `eventAccess()` + `projectEvent()` are shared by both so an event appears in
   your list exactly when you could open it, and looks identical either way. Both
   synthesize a **`guestList`** from reservations (one scan grouped by event) —
-  entries `{ id, name?, response?, guests }` (Facebook-style: participants see
-  who's coming). (`PATCH /events/:eventId/config` remains for editing config;
+  entries `{ id, name?, avatar?, response?, guests }` (Facebook-style:
+  participants see who's coming) — but the guest list is **responders only**.
+  For the admins-only "haven't responded" view there's **`events.members`**
+  (`GET /events/:eventId/members`, event-admin gated): the full roster resolved
+  from `members[]` — every associated account with name, avatar, and `response`
+  (null = no RSVP yet), including non-responders the guest list omits.
+  **`events.removeMember`** (`DELETE /events/:eventId/members/:accountId`,
+  event-admin gated) fully removes an account: strips its `/events/:id/*` grants,
+  drops it from `members[]`, and deletes its reservation (you can't remove
+  yourself → 400). (`PATCH /events/:eventId/config` remains for editing config;
   there's no GET on that path — read config via the graded `GET /events/:id`.)
 - `reservations` — an account's RSVP to an event, one per (event, account),
   keyed `<eventId>~<accountId>`. `PUT/GET/DELETE /events/:eventId/reservation`
@@ -395,8 +403,13 @@ double as client routes via the negotiation above):
   to the config Patch, which now also carries the `$blob` ref, *and* the
   operative `PATCH /events/:eventId`) **and** an "Admin actions"
   accordion (Create invite) both gated on `access.admin` (so event admins see
-  them), an RSVP strip gated on `access.join`, and a guest list whose names link
-  to profiles.
+  them), an RSVP strip gated on `access.join`, and the RSVP roster (`Rsvps`) —
+  a "Who's Going" tab listing the *going* responses then the *maybes* (tagged
+  "(maybe going)"), and a "Can't go" tab for the declines; names link to
+  profiles. The Admin actions accordion also links to **User management**
+  (`/events/:eventId/users` → `EventUsers`, admin-only): the full roster from
+  `events.members` (including no-response invitees), each with a two-click
+  **Revoke invite** that calls `events.removeMember`.
 - `/accounts/:accountId` → profile page: editable only for your own account —
   display name **and a profile-picture upload** (to your `accounts/<id>` bucket
   via the resumable protocol + `<progress>` bar; the `$blob` ref is saved through
