@@ -23,6 +23,8 @@ mcp.mjs     stateless Streamable-HTTP MCP endpoint (tools/list + tools/call == r
 auth.mjs    Resource Server (JWT validation) + bootstrap issuer + invite redeem
             + GET /admin login helper page
 permissions.mjs  pure path-glob matcher: can(grants, path)
+blobs.mjs   REST-native binary store: permissioned buckets + resumable
+            upload/download protocol, referenced from JSON via `{ $blob }`
 errors.mjs  ClientError(msg, statusCode) — the caller-error seam adapters map
 spa.mjs     serve the built React client, content-negotiated onto the API URLs
 dev.mjs     `velvet --dev` supervisor: watched backend + Vite HMR
@@ -86,7 +88,10 @@ one both positionally *and* by flag is an error. No other file needs editing.
   **graded**: admins (`/events/:id/admin`) get the full doc; participants
   (`/view` *or* `/join`) get a whitelisted user view (`id`, `startsAt`, `endsAt`,
   `config`, `guestList` — operative fields drive display, so participants see
-  them); anyone else → 404 (hide). Both views also carry an **`access`**
+  them); anyone else → 404 (hide). An event also has a **blob bucket**
+  `events/<id>` (see Blob storage) — writable by its admin, readable by
+  participants; the SPA stores a cover image there and references it from
+  `config.picture` as `{ $blob: 'events/<id>/blb_…' }`. Both views also carry an **`access`**
   block (`{ admin, join }`) so a client offers only the actions the viewer may
   take (e.g. the SPA's RSVP strip appears iff `access.join`). `GET /events` (`events.list`) is
   **"my events"** — no admin gate; it returns only the events you participate in
@@ -254,6 +259,65 @@ their event but not mint global admins. External trusted issuers remain deferred
 updater — immer revokes it on return, and touching it later throws "proxy that
 has been revoked". Snapshot a plain copy inside the updater (`[...draft.arr]`).
 
+## Blob storage (`blobs.mjs`)
+
+Binary that JSON refers to by an embedded sentinel
+**`{ $blob: '<bucket>/blb_<id>' }`**. A **REST-native subsystem** (like
+`auth.mjs`), *not* a registry action — the resumable transfer protocol
+(offset-addressed append, `HEAD`-to-resume, `Range` download) doesn't project
+onto CLI/MCP. So the registry stays JSON-only; **MCP/CLI can still carry `$blob`
+refs inside `config`, they just can't move bytes** (this is the Option-B answer
+to "binary over MCP": out-of-band bytes, an opaque handle in the JSON).
+
+**Buckets are permission-scoped namespaces with a storage policy.**
+`resolveBucket(bucket)` maps a bucket string to `{ canRead(ctx), canWrite(ctx),
+maxBytes, evict }` (or `null` → 404, and the strict regex means no `..` reaches
+the fs). New bucket kinds slot into `resolveBucket`. Two kinds today:
+- **`events/<evt_id>`** — `canWrite` = `/events/:id/admin`, `canRead` =
+  participant (`/admin`|`/join`|`/view`). So a blob grades **exactly** like its
+  event (reuses the `eventAccess` logic), and the download URL is literally
+  `/blobs/<ref>` — an `<img src>` a participant's session cookie authorizes
+  automatically. Cap 10 MB, evict-oldest (so stale covers eventually reap).
+- **`accounts/<acct_id>`** — the per-user profile-picture bucket. `canWrite` =
+  owner (`ctx.auth.sub === id`) or global admin; `canRead` = any signed-in caller
+  (avatars show in guest lists). Cap **2 MB**, evict-oldest — upload several and
+  the stale ones purge fast. (The upload UI for this isn't wired yet; the bucket
+  kind + policy are.)
+
+**Per-bucket quota + GC.** `maxBytes` caps the bucket's *total* declared bytes
+(an in-progress upload reserves its full `size`). A create is enforced by
+`reserveAndCreate` under a per-bucket lock: if it won't fit and `evict` is
+`'oldest'`, the oldest **complete** blobs are purged (by `createdAt`) until it
+does; if it still won't fit (or `evict` is `'reject'`, the default), the create
+`413`s. A single blob larger than `maxBytes` always `413`s. This is the GC —
+there's no background sweeper; space is reclaimed lazily, at the moment a new
+upload needs it.
+
+**Read-time enforcement only** (v1): a forged/cross-bucket ref just 403/404s for
+everyone, so no bytes leak — `logic.mjs` stays decoupled (a `$blob` in `config`
+is opaque data it round-trips; there's no write-time ref validation yet).
+
+**The protocol** (all `/blobs/*`, splat parsed per method; writes ride the same
+cookie-auth + `csrfGuard` as REST; bytes live at `data/blobs/<bucket>/<blobId>`
+with a `.meta.json` sidecar, plain fs — not pulp-db):
+- `POST /blobs/<bucket>` `{ size, contentType, filename? }` → `201 { id, bucket,
+  ref, offset, size }` — create a session (declare total size).
+- `PATCH /blobs/<bucket>/<blobId>` — append a chunk: `Upload-Offset` header +
+  `application/offset+octet-stream` body. Offset ≠ current → `409` + the real
+  `Upload-Offset` (client re-syncs → **resumable**); past `size` → `400`;
+  reaching `size` → `Upload-Complete: true`. A per-blob async lock serializes
+  appends.
+- `HEAD /blobs/<bucket>/<blobId>` → `Upload-Offset`/`-Length`/`-Complete` (query
+  where to resume).
+- `GET /blobs/<bucket>/<blobId>` → download once complete; `Range`-aware (`206`),
+  `Cache-Control: immutable` (a completed id never changes).
+- `DELETE /blobs/<bucket>/<blobId>` → remove.
+
+The chunked create-then-append shape is what lets the SPA draw a **progress bar**
+(it PATCHes 1 MB chunks and reports the running offset) and lets a future client
+**resume** a broken upload. `/blobs` is in `spa.mjs`'s `NON_SPA` (never the app
+shell). Caps: 25 MB declared size, 8 MB per chunk.
+
 ## Run
 
 ```sh
@@ -294,10 +358,13 @@ No token touches page JS. The startup banner points the operator there.
 double as client routes via the negotiation above):
 - `/` or `/events` → your events list (a **Create event** button for global
   admins mints a blank event and jumps into it); `/events/:eventId` → event
-  detail: the graded view (title, a localized schedule line when `startsAt`/
-  `endsAt` are set, description), an edit pencil (title, description, and the
-  `startsAt`/`endsAt` datetime pickers — one Save fans out to the config Patch
-  *and* the operative `PATCH /events/:eventId`) **and** an "Admin actions"
+  detail: the graded view (an optional cover image from `config.picture`'s
+  `$blob`, title, a localized schedule line when `startsAt`/`endsAt` are set,
+  description), an edit pencil (title, description, the `startsAt`/`endsAt`
+  datetime pickers, and a cover-image picker that uploads to the event's blob
+  bucket via the resumable protocol with a `<progress>` bar — one Save fans out
+  to the config Patch, which now also carries the `$blob` ref, *and* the
+  operative `PATCH /events/:eventId`) **and** an "Admin actions"
   accordion (Create invite) both gated on `access.admin` (so event admins see
   them), an RSVP strip gated on `access.join`, and a guest list whose names link
   to profiles.
@@ -353,8 +420,14 @@ process.
 - **Killing a *test* server: don't `pkill -f "index.mjs serve"`** — the pattern
   matches your own shell. Capture `$!` at launch and `kill` that. A node server's
   `comm` shows as `MainThread`, so `comm`-based filters miss it.
-- **`data/` is gitignored** — holds the signing key and live bootstrap credential.
-  Never commit it.
+- **`data/` is gitignored** — holds the signing key and live bootstrap credential
+  (and, under `data/blobs/`, uploaded blob bytes). Never commit it.
+- **Blobs can orphan** — the SPA uploads a cover image immediately but only
+  writes the `$blob` ref on Save, so Cancel (or replacing an image) leaves bytes
+  in `data/blobs/` unreferenced. There's no background sweeper; the per-bucket
+  evict-oldest policy reclaims them lazily when a later upload needs the space
+  (see Blob storage). Read-time-only enforcement means a dangling ref (evicted or
+  never-saved) just renders broken, never leaks.
 - **`package.json` uses `file:../` deps** (`pulp-db`, `cardcatalog`, `sbopts`) —
   resolves inside `silly/`, not in a standalone clone.
 - **claude.ai needs a public HTTPS URL** for MCP — can't dial `http://localhost`.

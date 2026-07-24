@@ -43,6 +43,51 @@ async function api(path, opts = {}) {
     return r.json();
 }
 
+// Upload a File to a permissioned blob bucket via the resumable protocol:
+// create a session, then PATCH the bytes in chunks at the running offset. Chunked
+// so we can report progress (and, later, resume). Returns the `$blob` ref string
+// (`<bucket>/blb_<id>`). Uses fetch directly (not api()) — the responses are
+// 201/204 with header state, not JSON envelopes — but still echoes the CSRF
+// token on these cookie-authenticated writes.
+const BLOB_CHUNK = 1024 * 1024;   // 1 MB
+async function uploadBlob(bucket, file, onProgress) {
+    const create = await fetch(`/blobs/${bucket}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', Accept: 'application/json',
+            ...csrfHeaders('POST') },
+        body: JSON.stringify({
+            size: file.size,
+            contentType: file.type || 'application/octet-stream',
+            filename: file.name
+        })
+    });
+    if (!create.ok) throw new Error('could not start upload');
+    const { ref } = await create.json();
+
+    let offset = 0;
+    while (offset < file.size) {
+        const end = Math.min(offset + BLOB_CHUNK, file.size);
+        const res = await fetch(`/blobs/${ref}`, {
+            method: 'PATCH',
+            headers: {
+                'content-type': 'application/offset+octet-stream',
+                'upload-offset': String(offset),
+                ...csrfHeaders('PATCH')
+            },
+            body: file.slice(offset, end)
+        });
+        if (res.status === 409) {
+            // Server and client disagree on the offset — resync and retry.
+            offset = Number(res.headers.get('upload-offset')) || 0;
+            continue;
+        }
+        if (!res.ok) throw new Error('upload failed');
+        offset = Number(res.headers.get('upload-offset')) || end;
+        onProgress?.(offset / file.size);
+    }
+    return ref;
+}
+
 // Who's signed in — resolved once from GET /session (the server decodes the
 // cookie; the client can't). `{ accountId, isAdmin }`, or null when logged out.
 // Provided by <App>; read via useSession() anywhere below it.
@@ -215,9 +260,10 @@ function EventDetail({ id }) {
     const [event, setEvent] = useState(undefined);
     const [editing, setEditing] = useState(false);
     const [form, setForm] = useState({
-        title: '', description: '', startsAt: '', endsAt: ''
+        title: '', description: '', startsAt: '', endsAt: '', picture: ''
     });
     const [saving, setSaving] = useState(false);
+    const [uploadPct, setUploadPct] = useState(null);   // null = idle, 0..1 = busy
 
     const load = () => api(`/events/${id}`).then(setEvent).catch(() => setEvent(null));
     useEffect(() => { load(); }, [id]);
@@ -244,9 +290,25 @@ function EventDetail({ id }) {
             title: config.title ?? '',
             description: config.description ?? '',
             startsAt: toLocalInput(event.startsAt),
-            endsAt: toLocalInput(event.endsAt)
+            endsAt: toLocalInput(event.endsAt),
+            picture: config.picture?.$blob ?? ''   // the current cover's ref
         });
         setEditing(true);
+    };
+
+    // Cover image: upload to this event's bucket (event admins can write it),
+    // then stash the returned $blob ref in the form — persisted on Save.
+    const pickImage = async (e) => {
+        const file = e.target.files?.[0];
+        e.target.value = '';   // allow re-picking the same file
+        if (!file) return;
+        setUploadPct(0);
+        try {
+            const ref = await uploadBlob(`events/${id}`, file, setUploadPct);
+            setForm((f) => ({ ...f, picture: ref }));
+        }
+        catch { /* leave the prior picture; the input is still usable */ }
+        setUploadPct(null);
     };
 
     const save = async () => {
@@ -258,6 +320,12 @@ function EventDetail({ id }) {
             patch.push({ op: 'add', path: '/description', value: form.description });
         } else if (config.description !== undefined) {
             patch.push({ op: 'remove', path: '/description' });
+        }
+        // Cover image ref (`add` also replaces an existing member per RFC 6902).
+        if (form.picture) {
+            patch.push({ op: 'add', path: '/picture', value: { $blob: form.picture } });
+        } else if (config.picture !== undefined) {
+            patch.push({ op: 'remove', path: '/picture' });
         }
         await api(`/events/${id}/config`, {
             method: 'PATCH',
@@ -299,14 +367,41 @@ function EventDetail({ id }) {
                         <input style={input} type="datetime-local" value={form.endsAt}
                             onChange={(e) => setForm({ ...form, endsAt: e.target.value })} />
                     </label>
+                    <label style={label}>Cover image</label>
+                    <div style={{ margin: '.35rem 0 1rem' }}>
+                        {form.picture && (
+                            <img src={`/blobs/${form.picture}`} alt="Cover preview"
+                                style={{ display: 'block', maxWidth: '100%',
+                                    borderRadius: 6, marginBottom: '.5rem' }} />
+                        )}
+                        {uploadPct !== null ? (
+                            <progress value={uploadPct} max={1}
+                                style={{ width: '100%' }} />
+                        ) : (
+                            <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center' }}>
+                                <input type="file" accept="image/*" onChange={pickImage} />
+                                {form.picture && (
+                                    <button type="button"
+                                        onClick={() => setForm({ ...form, picture: '' })}>
+                                        Remove
+                                    </button>
+                                )}
+                            </div>
+                        )}
+                    </div>
                     <div>
-                        <button onClick={save} disabled={saving}>Save</button>{' '}
+                        <button onClick={save} disabled={saving || uploadPct !== null}>Save</button>{' '}
                         <button onClick={() => setEditing(false)} disabled={saving}>Cancel</button>
                     </div>
                 </div>
             ) : (
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
                     <div>
+                        {config.picture?.$blob && (
+                            <img src={`/blobs/${config.picture.$blob}`} alt=""
+                                style={{ display: 'block', maxWidth: '100%',
+                                    borderRadius: 8, marginBottom: '.75rem' }} />
+                        )}
                         <h1 style={{ margin: 0 }}>{config.title || event.id}</h1>
                         {formatWhen(event.startsAt, event.endsAt) && (
                             <p style={{ ...dim, margin: '.4rem 0 0' }}>

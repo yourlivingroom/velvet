@@ -8,6 +8,7 @@ import swaggerUi from '@fastify/swagger-ui';
 import { registerRest } from './rest.mjs';
 import { registerMcp } from './mcp.mjs';
 import { registerAuth } from './auth.mjs';
+import { registerBlobs } from './blobs.mjs';
 import { registerSpa } from './spa.mjs';
 
 // One process, four doors into the same registry:
@@ -74,6 +75,12 @@ export async function startServer({ actions, close, redeemInvite, makeContext },
             { authenticate, challenge, csrfGuard, makeContext: ctxFor });
     registerMcp(fastify, actions,
             { path: '/mcp', onRequest: guard, makeContext: ctxFor });
+
+    // Binary storage: permissioned buckets + the resumable upload/download
+    // protocol JSON refers to via `{ $blob }`. A REST-native surface (like auth),
+    // not registry actions. Cookie-auth + CSRF for writes ride the same guards.
+    await registerBlobs(fastify,
+            { authenticate, csrfGuard, makeContext: ctxFor, rootPath });
 
     // The built React client (if present), content-negotiated onto the API
     // URLs. In `--dev` the Vite dev server serves the client and proxies here,
