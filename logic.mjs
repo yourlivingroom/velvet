@@ -827,6 +827,71 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
             }
         },
 
+        // The "links sent, not used" cohort: invites conferring access to this
+        // event that nobody has redeemed yet (no bound account). Event-admin
+        // gated; secret tokens omitted (shown once at creation).
+        'events.invites': {
+            summary: "List an event's open (unredeemed) invites (admin).",
+            description: 'Event-admin-only list of invites that confer access to '
+                    + 'this event and have not been redeemed yet (no bound '
+                    + 'account). Secret `token`s are omitted; the non-secret `id` '
+                    + '(nvt_…) identifies each for events.revokeInvite. Newest '
+                    + 'first.',
+            http: { method: 'GET', path: '/events/:eventId/invites' },
+            input: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['eventId'],
+                properties: {
+                    eventId: { type: 'string', description: 'Event id (evt_…).' }
+                }
+            },
+            handler: async ({ eventId }, ctx) => {
+                ctx.assertPermission(`/events/${eventId}/admin`);
+                const all = await inviteCol.listDocs();
+                return all
+                        .filter((v) => !v.accountId   // open = not yet redeemed
+                                && (v.grants ?? []).some(
+                                        (g) => eventIdFromGrant(g) === eventId))
+                        .map(withoutToken)
+                        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+            }
+        },
+
+        // Invalidate an open invite's link by deleting it. Event-admin gated;
+        // only invites that actually confer access to this event are reachable.
+        'events.revokeInvite': {
+            summary: 'Invalidate an invite for an event (admin).',
+            description: "Deletes the invite by id, invalidating its link, if it "
+                    + 'confers access to this event. Event-admin gated. Returns '
+                    + 'the deleted invite (token omitted), or null if not found / '
+                    + 'unrelated to this event. (For an *already-redeemed* member '
+                    + 'use events.removeMember — deleting the invite record does '
+                    + "not revoke an account's existing grants.)",
+            http: {
+                method: 'DELETE', path: '/events/:eventId/invites/:inviteId'
+            },
+            input: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['eventId', 'inviteId'],
+                properties: {
+                    eventId: { type: 'string', description: 'Event id (evt_…).' },
+                    inviteId: { type: 'string', description: 'Invite id (nvt_…).' }
+                }
+            },
+            handler: async ({ eventId, inviteId }, ctx) => {
+                ctx.assertPermission(`/events/${eventId}/admin`);
+                const invite = await inviteCol.getDoc(inviteId);
+                if (!invite || !(invite.grants ?? [])
+                        .some((g) => eventIdFromGrant(g) === eventId)) {
+                    return null;   // absent or not this event's invite — hide
+                }
+                const deleted = await inviteCol.deleteDoc(inviteId);
+                return deleted ? withoutToken(deleted) : null;
+            }
+        },
+
         // Owner-or-admin: you can read/edit your own account; admin, any.
         'accounts.get': {
             summary: 'Fetch an account — full for owner/admin, public view else.',

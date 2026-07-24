@@ -123,8 +123,14 @@ one both positionally *and* by flag is an error. No other file needs editing.
   **`events.removeMember`** (`DELETE /events/:eventId/members/:accountId`,
   event-admin gated) fully removes an account: strips its `/events/:id/*` grants,
   drops it from `members[]`, and deletes its reservation (you can't remove
-  yourself → 400). (`PATCH /events/:eventId/config` remains for editing config;
-  there's no GET on that path — read config via the graded `GET /events/:id`.)
+  yourself → 400). The **open-invite** ("link sent, not used") cohort has its own
+  pair: **`events.invites`** (`GET /events/:eventId/invites`, event-admin gated)
+  lists invites conferring access to the event that nobody has redeemed yet
+  (`!accountId`), token omitted; **`events.revokeInvite`**
+  (`DELETE /events/:eventId/invites/:inviteId`) deletes one to invalidate its
+  link (only if it references this event). (`PATCH /events/:eventId/config`
+  remains for editing config; there's no GET on that path — read config via the
+  graded `GET /events/:id`.)
 - `reservations` — an account's RSVP to an event, one per (event, account),
   keyed `<eventId>~<accountId>`. `PUT/GET/DELETE /events/:eventId/reservation`
   gated (in-handler) on `/events/:id/join`; `accountId` defaults to the caller,
@@ -409,7 +415,10 @@ double as client routes via the negotiation above):
   profiles. The Admin actions accordion also links to **User management**
   (`/events/:eventId/users` → `EventUsers`, admin-only): the full roster from
   `events.members` (including no-response invitees), each with a two-click
-  **Revoke invite** that calls `events.removeMember`.
+  **Revoke invite** that calls `events.removeMember`; and **Open invites**
+  (`/events/:eventId/invites` → `EventInvites`, admin-only): unredeemed invite
+  links from `events.invites`, each with a two-click **Invalidate**
+  (`events.revokeInvite`).
 - `/accounts/:accountId` → profile page: editable only for your own account —
   display name **and a profile-picture upload** (to your `accounts/<id>` bucket
   via the resumable protocol + `<progress>` bar; the `$blob` ref is saved through

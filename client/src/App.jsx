@@ -620,6 +620,75 @@ function RosterRow({ user, eventId, onRevoke, canRevoke }) {
     );
 }
 
+// Admin-only open-invites page (/events/:id/invites): invite links that have
+// been created for the event but not yet redeemed, each invalidatable.
+function EventInvites({ eventId }) {
+    const [invites, setInvites] = useState(undefined); // undefined=loading, null=no access
+    const load = () => api(`/events/${eventId}/invites`)
+        .then((r) => setInvites(Array.isArray(r) ? r : null))
+        .catch(() => setInvites(null));
+    useEffect(() => { load(); }, [eventId]);
+
+    const invalidate = async (inviteId) => {
+        await api(`/events/${eventId}/invites/${inviteId}`, { method: 'DELETE' });
+        await load();
+    };
+
+    if (invites === undefined) {
+        return <main style={wrap}><p>Loading…</p></main>;
+    }
+    if (invites === null) {
+        return (
+            <main style={wrap}>
+                <p><a href={`/events/${eventId}`}>← event</a></p>
+                <p>You don't have access to manage this event.</p>
+            </main>
+        );
+    }
+    return (
+        <main style={wrap}>
+            <p><a href={`/events/${eventId}`}>← event</a></p>
+            <h1>Open invites</h1>
+            {invites.length === 0 ? (
+                <p>No open invites — every link has been redeemed (or none created
+                    yet). Create one from the event's Admin actions.</p>
+            ) : (
+                <ul style={{ listStyle: 'none', padding: 0 }}>
+                    {invites.map((inv) => (
+                        <InviteRow key={inv.id} invite={inv} onInvalidate={invalidate} />
+                    ))}
+                </ul>
+            )}
+        </main>
+    );
+}
+
+// One open-invite row: its name + when it was created, with a two-click
+// Invalidate (deletes the invite so its link stops working).
+function InviteRow({ invite, onInvalidate }) {
+    const [confirming, setConfirming] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const created = invite.createdAt
+        ? new Date(invite.createdAt).toLocaleDateString() : null;
+    return (
+        <li style={{ display: 'flex', alignItems: 'center', gap: '.75rem', margin: '.6rem 0' }}>
+            <span>{invite.name || 'Unnamed invite'}</span>
+            {created && <span style={dim}>created {created}</span>}
+            <span style={{ marginLeft: 'auto' }}>
+                {confirming ? (
+                    <>
+                        <button onClick={async () => { setBusy(true); await onInvalidate(invite.id); }}
+                            disabled={busy}>Invalidate</button>{' '}
+                        <button onClick={() => setConfirming(false)} disabled={busy}>Cancel</button>
+                    </>
+                ) : (
+                    <button onClick={() => setConfirming(true)}>Invalidate</button>
+                )}
+            </span>
+        </li>
+    );
+}
+
 function AdminActions({ eventId }) {
     const [inviting, setInviting] = useState(false);
     return (
@@ -627,9 +696,10 @@ function AdminActions({ eventId }) {
             <summary style={{ ...dim, cursor: 'pointer', fontWeight: 600 }}>
                 Admin actions
             </summary>
-            <div style={{ padding: '.75rem 0', display: 'flex', gap: '1rem', alignItems: 'center' }}>
+            <div style={{ padding: '.75rem 0', display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
                 <button onClick={() => setInviting(true)}>Create invite</button>
                 <a href={`/events/${eventId}/users`}>User management</a>
+                <a href={`/events/${eventId}/invites`}>Open invites</a>
             </div>
             {inviting && (
                 <CreateInviteModal eventId={eventId} onClose={() => setInviting(false)} />
@@ -1067,12 +1137,14 @@ function Shell({ path }) {
 
     const account = path.match(/^\/accounts\/([^/]+)$/);
     const eventUsers = path.match(/^\/events\/([^/]+)\/users$/);
+    const eventInvites = path.match(/^\/events\/([^/]+)\/invites$/);
     const event = path.match(/^\/events\/([^/]+)$/);
     return (
         <SessionContext.Provider value={session}>
             <ProfileMenu />
             {account ? <AccountPage accountId={account[1]} />
                 : eventUsers ? <EventUsers eventId={eventUsers[1]} />
+                : eventInvites ? <EventInvites eventId={eventInvites[1]} />
                 : event ? <EventDetail id={event[1]} />
                 : <EventList />}
         </SessionContext.Provider>
