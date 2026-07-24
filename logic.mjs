@@ -402,7 +402,10 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                     }
                 }
             },
-            handler: ({ config }) => eventCol.createDoc({ config: config ?? {} })
+            // startsAt/endsAt are *operative* top-level fields (see events.update),
+            // distinct from the user's free-form `config`. They start null.
+            handler: ({ config }) => eventCol.createDoc(
+                    { config: config ?? {}, startsAt: null, endsAt: null })
         },
 
         'events.get': {
@@ -540,6 +543,62 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                             draft.config = results.length
                                     ? results[results.length - 1].newDocument
                                     : clone;
+                        });
+                return found ? newValue : null;
+            }
+        },
+
+        // Edit an event's *operative* top-level fields (currently the schedule).
+        // Distinct from events.patch, which edits the free-form `config`: these
+        // fields (startsAt/endsAt) are data we'll reason about, not just render,
+        // so they live at the top level, not in config. Same event-scoped admin
+        // gate as events.patch/delete (enforced in-handler).
+        'events.update': {
+            summary: "Set an event's schedule (startsAt/endsAt).",
+            description: 'Updates operative top-level fields on an event: '
+                    + '`startsAt` and `endsAt` (ISO 8601 date-times). Omit a '
+                    + 'field to leave it unchanged; pass null to clear it. '
+                    + 'Requires admin over the event.',
+            http: { method: 'PATCH', path: '/events/:eventId' },
+            input: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['eventId'],
+                properties: {
+                    eventId: { type: 'string', description: 'Event id (evt_…).' },
+                    startsAt: {
+                        type: ['string', 'null'],
+                        description: 'Event start as an ISO 8601 date-time '
+                                + '(null clears; omit to leave unchanged).'
+                    },
+                    endsAt: {
+                        type: ['string', 'null'],
+                        description: 'Event end as an ISO 8601 date-time '
+                                + '(null clears; omit to leave unchanged).'
+                    }
+                }
+            },
+            handler: async ({ eventId, startsAt, endsAt }, ctx) => {
+                ctx.assertPermission(`/events/${eventId}/admin`);
+                // undefined → leave alone; null → clear; string → normalize to a
+                // canonical ISO instant (rejects unparseable input).
+                const norm = (v, field) => {
+                    if (v === undefined || v === null) return v;
+                    const d = new Date(v);
+                    if (Number.isNaN(d.getTime())) {
+                        throw new ClientError(
+                                `Invalid ${field}: not a date-time.`, 422);
+                    }
+                    return d.toISOString();
+                };
+                const s = norm(startsAt, 'startsAt');
+                const e = norm(endsAt, 'endsAt');
+                let found = true;
+                const { newValue } = await events.edit(`${eventId}.json`,
+                        (draft) => {
+                            if (draft === undefined) { found = false; return; }
+                            if (s !== undefined) draft.startsAt = s;
+                            if (e !== undefined) draft.endsAt = e;
                         });
                 return found ? newValue : null;
             }
@@ -820,8 +879,14 @@ function eventAccess(eventId, ctx) {
 // admin-only fields never leak by default). Both get the guest list, plus an
 // `access` block telling the viewer what they may do (e.g. drive the RSVP UI).
 function projectEvent(event, guestList, access) {
+    // Operative fields are visible to any participant (they drive display), and
+    // normalized to null so events created before they existed read uniformly.
+    const times = {
+        startsAt: event.startsAt ?? null,
+        endsAt: event.endsAt ?? null
+    };
     const view = access.admin
-            ? { ...event, guestList }
-            : { id: event.id, config: event.config, guestList };
+            ? { ...event, ...times, guestList }
+            : { id: event.id, ...times, config: event.config, guestList };
     return { ...view, access: { admin: access.admin, join: access.join } };
 }

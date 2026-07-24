@@ -90,15 +90,37 @@ const rsvpBtn = {
 const rsvpBtnActive = { background: '#2563eb', color: '#fff' };
 
 function EventList() {
+    const session = useSession();
     const [events, setEvents] = useState(null);
+    const [creating, setCreating] = useState(false);
     useEffect(() => {
         api('/events').then(setEvents).catch(() => setEvents([]));
     }, []);
 
+    // Admins can spin up a blank event, then click through to fill it in. The
+    // server defaults config to {}, so no body is needed beyond an empty object.
+    const create = async () => {
+        setCreating(true);
+        const e = await api('/events', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        if (e && e.id) window.location.href = `/events/${e.id}`;
+        else setCreating(false);
+    };
+
     return (
         <main style={wrap}>
             <h1>velvet</h1>
-            <h2 style={dim}>Your events</h2>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <h2 style={dim}>Your events</h2>
+                {session.isAdmin && (
+                    <button onClick={create} disabled={creating}>
+                        {creating ? 'Creating…' : 'Create event'}
+                    </button>
+                )}
+            </div>
             {events === null ? (
                 <p>Loading…</p>
             ) : events.length === 0 ? (
@@ -123,6 +145,32 @@ const RSVP_OPTIONS = [
 ];
 // Status wording for a read-out (vs the button strip); missing → No Response.
 const RSVP_LABELS = { going: 'Going', maybe: 'Maybe', 'not-going': 'Not Going' };
+
+// An ISO instant → the value a <input type="datetime-local"> wants
+// (YYYY-MM-DDTHH:mm in *local* time). Empty string for null/unset.
+function toLocalInput(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+        + `T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// A datetime-local value (local, no zone) → a full ISO instant, or null.
+// new Date(local).toISOString() anchors it to the viewer's timezone.
+const localInputToIso = (v) => (v ? new Date(v).toISOString() : null);
+
+// Human-readable schedule line, or null when neither bound is set.
+function formatWhen(startsAt, endsAt) {
+    const fmt = (iso) => new Date(iso).toLocaleString([], {
+        dateStyle: 'medium', timeStyle: 'short'
+    });
+    if (startsAt && endsAt) return `${fmt(startsAt)} – ${fmt(endsAt)}`;
+    if (startsAt) return `Starts ${fmt(startsAt)}`;
+    if (endsAt) return `Ends ${fmt(endsAt)}`;
+    return null;
+}
 
 // Segmented RSVP control, shown to anyone with /join. `current` is the viewer's
 // response (from the guest list); `guests` their existing +N names, preserved
@@ -166,7 +214,9 @@ function EventDetail({ id }) {
     const session = useSession();
     const [event, setEvent] = useState(undefined);
     const [editing, setEditing] = useState(false);
-    const [form, setForm] = useState({ title: '', description: '' });
+    const [form, setForm] = useState({
+        title: '', description: '', startsAt: '', endsAt: ''
+    });
     const [saving, setSaving] = useState(false);
 
     const load = () => api(`/events/${id}`).then(setEvent).catch(() => setEvent(null));
@@ -190,13 +240,19 @@ function EventDetail({ id }) {
     const mine = guests.find((g) => g.id === session.accountId);
 
     const startEdit = () => {
-        setForm({ title: config.title ?? '', description: config.description ?? '' });
+        setForm({
+            title: config.title ?? '',
+            description: config.description ?? '',
+            startsAt: toLocalInput(event.startsAt),
+            endsAt: toLocalInput(event.endsAt)
+        });
         setEditing(true);
     };
 
     const save = async () => {
         setSaving(true);
-        // JSON Patch against the event's config (paths relative to config root).
+        // Two surfaces: the free-form config (JSON Patch, paths relative to the
+        // config root) and the operative schedule (top-level PATCH on the event).
         const patch = [{ op: 'add', path: '/title', value: form.title }];
         if (form.description) {
             patch.push({ op: 'add', path: '/description', value: form.description });
@@ -207,6 +263,14 @@ function EventDetail({ id }) {
             method: 'PATCH',
             headers: { 'content-type': 'application/json-patch+json' },
             body: JSON.stringify(patch)
+        });
+        await api(`/events/${id}`, {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                startsAt: localInputToIso(form.startsAt),
+                endsAt: localInputToIso(form.endsAt)
+            })
         });
         await load();
         setSaving(false);
@@ -227,6 +291,14 @@ function EventDetail({ id }) {
                         <textarea style={{ ...input, minHeight: '5rem' }} value={form.description}
                             onChange={(e) => setForm({ ...form, description: e.target.value })} />
                     </label>
+                    <label style={label}>Starts
+                        <input style={input} type="datetime-local" value={form.startsAt}
+                            onChange={(e) => setForm({ ...form, startsAt: e.target.value })} />
+                    </label>
+                    <label style={label}>Ends
+                        <input style={input} type="datetime-local" value={form.endsAt}
+                            onChange={(e) => setForm({ ...form, endsAt: e.target.value })} />
+                    </label>
                     <div>
                         <button onClick={save} disabled={saving}>Save</button>{' '}
                         <button onClick={() => setEditing(false)} disabled={saving}>Cancel</button>
@@ -236,6 +308,11 @@ function EventDetail({ id }) {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
                     <div>
                         <h1 style={{ margin: 0 }}>{config.title || event.id}</h1>
+                        {formatWhen(event.startsAt, event.endsAt) && (
+                            <p style={{ ...dim, margin: '.4rem 0 0' }}>
+                                {formatWhen(event.startsAt, event.endsAt)}
+                            </p>
+                        )}
                         {config.description && <p style={{ marginTop: '.5rem' }}>{config.description}</p>}
                     </div>
                     {event.access?.admin && (
@@ -350,7 +427,8 @@ function CreateInviteModal({ eventId, onClose }) {
                             <input style={input} value={name} autoFocus
                                 disabled={step === 'creating'}
                                 placeholder="Who's this invite for?"
-                                onChange={(e) => setName(e.target.value)} />
+                                onChange={(e) => setName(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') create(); }} />
                         </label>
                         <div style={{ textAlign: 'right' }}>
                             <button onClick={onClose} disabled={step === 'creating'}>Cancel</button>{' '}

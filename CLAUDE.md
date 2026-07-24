@@ -70,15 +70,23 @@ one both positionally *and* by flag is an error. No other file needs editing.
 ## Domain (so far)
 
 - `events` — stored doc separates **our** metadata (top-level `id` = `evt_…`,
-  `createdAt`) from the **user's** `config` (arbitrary JSON). Only `config` is
-  user-editable, via JSON Patch (RFC 6902) at `PATCH /events/:eventId/config`
-  (`events.patch`, whose `payload` is the ops array). Config edits and
+  `createdAt`) from the **user's** `config` (arbitrary JSON). Alongside metadata
+  sit **operative** top-level fields — `startsAt`/`endsAt` (ISO date-times,
+  optional, start `null`) — the distinction being that these are data we'll
+  *reason about*, not just render, so they don't belong in the free-form
+  `config`. Two edit surfaces, both event-admin gated: `config` via JSON Patch
+  (RFC 6902) at `PATCH /events/:eventId/config` (`events.patch`, whose `payload`
+  is the ops array), and the operative fields via `PATCH /events/:eventId`
+  (`events.update`: `startsAt`/`endsAt` as `['string','null']` — omit to leave
+  unchanged, `null` to clear, a string is parsed and normalized to a canonical
+  ISO instant or 422s). Config edits, `events.update`, and
   `events.delete` are gated **in-handler** on `/events/:id/admin` (event-scoped,
   so not a static `requires` — `ctx.assertPermission`), which `**` satisfies for
   every event. So "event admin" is a real role, not just a richer read. `GET /events/:eventId` is
   **graded**: admins (`/events/:id/admin`) get the full doc; participants
-  (`/view` *or* `/join`) get a whitelisted user view (`id`, `config`,
-  `guestList`); anyone else → 404 (hide). Both views also carry an **`access`**
+  (`/view` *or* `/join`) get a whitelisted user view (`id`, `startsAt`, `endsAt`,
+  `config`, `guestList` — operative fields drive display, so participants see
+  them); anyone else → 404 (hide). Both views also carry an **`access`**
   block (`{ admin, join }`) so a client offers only the actions the viewer may
   take (e.g. the SPA's RSVP strip appears iff `access.join`). `GET /events` (`events.list`) is
   **"my events"** — no admin gate; it returns only the events you participate in
@@ -284,10 +292,15 @@ No token touches page JS. The startup banner points the operator there.
 
 **Client routes & behaviors** (`src/App.jsx`, one tiny path router — RESTful URLs
 double as client routes via the negotiation above):
-- `/` or `/events` → your events list; `/events/:eventId` → event detail: the
-  graded view, a config-edit pencil **and** an "Admin actions" accordion (Create
-  invite) both gated on `access.admin` (so event admins see them), an RSVP strip
-  gated on `access.join`, and a guest list whose names link to profiles.
+- `/` or `/events` → your events list (a **Create event** button for global
+  admins mints a blank event and jumps into it); `/events/:eventId` → event
+  detail: the graded view (title, a localized schedule line when `startsAt`/
+  `endsAt` are set, description), an edit pencil (title, description, and the
+  `startsAt`/`endsAt` datetime pickers — one Save fans out to the config Patch
+  *and* the operative `PATCH /events/:eventId`) **and** an "Admin actions"
+  accordion (Create invite) both gated on `access.admin` (so event admins see
+  them), an RSVP strip gated on `access.join`, and a guest list whose names link
+  to profiles.
 - `/accounts/:accountId` → profile page: editable only for your own account
   (peers get a read-only `{ id, name }` view); `?event=<eventId>` renders it
   relative to that event — the account's RSVP status line plus, for an admin of
