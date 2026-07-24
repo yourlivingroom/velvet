@@ -236,34 +236,128 @@ function formatWhen(startsAt, endsAt) {
     return null;
 }
 
-// Segmented RSVP control, shown to anyone with /join. `current` is the viewer's
-// response (from the guest list); `guests` their existing +N names, preserved
-// so flipping the response doesn't drop them.
+// Inline trash icon — stroke=currentColor so it inherits the button's color
+// (and recolors on hover), and scales with font-size. Fully CSS-themeable.
+const TrashIcon = () => (
+    <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <polyline points="3 6 5 6 21 6" />
+        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+        <line x1="10" y1="11" x2="10" y2="17" />
+        <line x1="14" y1="11" x2="14" y2="17" />
+    </svg>
+);
+
+// Inline "add person" icon — currentColor + font-relative, like TrashIcon.
+const UserPlusIcon = () => (
+    <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+        <circle cx="9" cy="7" r="4" />
+        <line x1="19" y1="8" x2="19" y2="14" />
+        <line x1="22" y1="11" x2="16" y2="11" />
+    </svg>
+);
+
+// Segmented RSVP control (shown to anyone with /join) + guest management. When
+// the viewer is going/maybe they can add named guests: each is a clickable name
+// that opens an inline editor (text box + Save + Remove). `current` is the
+// viewer's response; `guests` their saved guest names — preserved across a
+// response flip, and the whole reservation is re-PUT on any guest edit.
 function RsvpStrip({ eventId, current, guests, onDone }) {
     const [saving, setSaving] = useState(false);
-    const set = async (response) => {
-        if (saving || response === current) return;
+    const [editIdx, setEditIdx] = useState(null);   // null | index | 'new'
+    const [editValue, setEditValue] = useState('');
+
+    const put = async (response, nextGuests) => {
         setSaving(true);
         await api(`/events/${eventId}/reservation`, {
             method: 'PUT',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ response, guests })
+            body: JSON.stringify({ response, guests: nextGuests })
         });
         await onDone();
         setSaving(false);
     };
+
+    const setResponse = (response) => {
+        if (saving || response === current) return;
+        put(response, guests);
+    };
+
+    const commitGuests = (next) => { setEditIdx(null); put(current, next); };
+    const startEdit = (idx, val) => { setEditIdx(idx); setEditValue(val); };
+    const cancelEdit = () => setEditIdx(null);
+    const saveEdit = () => {
+        const v = editValue.trim();
+        if (!v) return;   // Save is disabled while empty; guard anyway
+        commitGuests(editIdx === 'new'
+            ? [...guests, v]
+            : guests.map((g, j) => (j === editIdx ? v : g)));
+    };
+    const removeGuest = (idx) => commitGuests(guests.filter((_, j) => j !== idx));
+
+    // The inline editor row: text box + primary Save + Cancel, plus a red ✕ Remove
+    // for an existing guest (a not-yet-saved new one is dropped via Cancel). Sized
+    // to match the display chip's height so opening it doesn't shift the layout.
+    const editRow = (idx) => (
+        <span className="guest-edit">
+            <input value={editValue} autoFocus aria-label="Guest name"
+                placeholder="Guest name"
+                onChange={(e) => setEditValue(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') saveEdit(); }} />
+            <button className="primary" onClick={saveEdit}
+                disabled={saving || !editValue.trim()}>Save</button>
+            <button onClick={cancelEdit} disabled={saving}>Cancel</button>
+            {idx !== 'new' && (
+                <button className="danger" onClick={() => removeGuest(idx)}
+                    disabled={saving} aria-label="Remove guest" title="Remove">
+                    <TrashIcon />
+                </button>
+            )}
+        </span>
+    );
+
+    const attending = current === 'going' || current === 'maybe';
+
     return (
-        <div className="rsvp">
-            {RSVP_OPTIONS.map((o) => {
-                const active = o.value === current;
-                return (
-                    <button key={o.value} onClick={() => set(o.value)}
-                        disabled={saving} aria-pressed={active}
-                        className={`rsvp__option${active ? ' rsvp__option--active' : ''}`}>
-                        {o.label}
+        <div className="rsvp-block">
+            <div className="rsvp">
+                {RSVP_OPTIONS.map((o) => {
+                    const active = o.value === current;
+                    return (
+                        <button key={o.value} onClick={() => setResponse(o.value)}
+                            disabled={saving} aria-pressed={active}
+                            className={`rsvp__option${active ? ' rsvp__option--active' : ''}`}>
+                            {o.label}
+                        </button>
+                    );
+                })}
+            </div>
+            {attending && (
+                <div className="guests">
+                    {guests.length > 0 && <h3 className="guests__heading">Your Guests</h3>}
+                    <ul className="guest-list">
+                        {guests.map((g, i) => (
+                            <li key={i} className="guest">
+                                {editIdx === i ? editRow(i) : (
+                                    <button className="guest__name" onClick={() => startEdit(i, g)}>
+                                        {g || '(unnamed)'}
+                                    </button>
+                                )}
+                            </li>
+                        ))}
+                        {editIdx === 'new' && (
+                            <li className="guest">{editRow('new')}</li>
+                        )}
+                    </ul>
+                    <button className="subtle" onClick={() => startEdit('new', '')}
+                        disabled={saving || editIdx === 'new'}>
+                        <UserPlusIcon />
+                        Add guest
                     </button>
-                );
-            })}
+                </div>
+            )}
         </div>
     );
 }
@@ -526,6 +620,8 @@ function Rsvps({ guests, eventId }) {
     const going = guests.filter((g) => g.response === 'going');
     const maybe = guests.filter((g) => g.response === 'maybe');
     const notGoing = guests.filter((g) => g.response === 'not-going');
+    // Head count = each attendee plus their guests.
+    const heads = (list) => list.reduce((n, g) => n + 1 + (g.guests?.length ?? 0), 0);
 
     const row = (g, note) => (
         <li key={g.id} className="roster__item">
@@ -544,7 +640,7 @@ function Rsvps({ guests, eventId }) {
     return (
         <div>
             <div className="tabs">
-                {tabBtn('going', "Who's Going", going.length + maybe.length)}
+                {tabBtn('going', "Who's Going", heads(going) + heads(maybe))}
                 {tabBtn('cant', "Can't go", notGoing.length)}
             </div>
             {tab === 'going' ? (

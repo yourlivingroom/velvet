@@ -19,6 +19,7 @@
         --border-strong: #cdd2d8;
         --accent: #2563eb;
         --accent-fg: #ffffff;
+        --danger: #dc2626;
         --radius: 10px;
         --radius-sm: 6px;
         --shadow: 0 10px 34px rgba(0, 0, 0, .18);
@@ -41,6 +42,7 @@
             --border-strong: #3a3f47;
             --accent: #5b8cff;
             --accent-fg: #0b0d10;
+            --danger: #f87171;
             --shadow: 0 10px 34px rgba(0, 0, 0, .5);
             --shadow-sm: 0 4px 16px rgba(0, 0, 0, .4);
             --overlay: rgba(0, 0, 0, .6);
@@ -82,6 +84,15 @@
     }
     button:hover:not(:disabled) { border-color: var(--accent); }
     button:disabled { opacity: .55; cursor: default; }
+    /* button variants (apply the class to any <button>) */
+    .primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+    .primary:hover:not(:disabled) { filter: brightness(1.08); }
+    .danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--border-strong)); }
+    .danger:hover:not(:disabled) { background: var(--danger); color: #fff; border-color: var(--danger); }
+    .subtle { background: transparent; border-color: var(--border-strong); color: var(--fg-muted); }
+    .subtle:hover:not(:disabled) { background: var(--bg); color: var(--fg); border-color: var(--accent); }
+    /* buttons carrying an inline icon lay the icon + label out inline */
+    button:has(.icon) { display: inline-flex; align-items: center; gap: .4rem; }
 
     input, textarea {
         font: inherit;
@@ -116,6 +127,8 @@
 
     /* icon-only affordances (emoji) */
     .icon-button { border: none; background: none; padding: .25rem; font-size: 1.3rem; line-height: 1; }
+    /* inline SVG icons: scale with font-size, inherit color via currentColor */
+    .icon { width: 1.15em; height: 1.15em; display: block; }
 
     /* event detail */
     .event-detail__header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
@@ -162,12 +175,35 @@
         padding: 1.25rem 1.5rem;
     }
 
-    /* RSVP segmented control */
-    .rsvp { display: inline-flex; margin: 1.25rem 0; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); overflow: hidden; }
+    /* RSVP segmented control + guest management */
+    .rsvp-block { margin: 1.25rem 0; }
+    .rsvp { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); overflow: hidden; }
     .rsvp__option { border: none; border-radius: 0; background: var(--surface); padding: .5rem 1.1rem; }
     .rsvp__option + .rsvp__option { border-left: 1px solid var(--border-strong); }
     .rsvp__option:hover:not(:disabled) { background: var(--bg); }
     .rsvp__option--active, .rsvp__option--active:hover:not(:disabled) { background: var(--accent); color: var(--accent-fg); }
+    .guests { margin-top: .75rem; }
+    .guests__heading { font-size: 1rem; margin: 0 0 .4rem; }
+    /* each guest on its own line; a fixed min-height so switching between the
+       chip and the editor keeps the row height constant (no layout shift). */
+    .guest-list { list-style: none; padding: 0; margin: 0 0 .6rem; }
+    .guest { margin: 0; display: flex; align-items: center; min-height: 2.6rem; }
+    .guest__name {
+        border: 1px solid var(--border-strong); background: var(--surface);
+        border-radius: 999px; padding: .3rem .8rem; color: inherit; line-height: 1.2;
+        transition: background .12s ease, border-color .12s ease, box-shadow .12s ease;
+    }
+    .guest__name:hover { background: var(--bg); border-color: var(--accent); box-shadow: var(--shadow-sm); }
+    .guest-edit { display: inline-flex; gap: .4rem; align-items: center; }
+    /* one control height across the field + all three buttons, so Save, Cancel
+       and the icon button are geometrically identical. min-height:0 + line-height:1
+       + no vertical padding removes the flex-item min-content floor that otherwise
+       let the padded text buttons grow past the set height. */
+    .guest-edit input { width: 14rem; height: 2.5rem; padding: 0 .6rem; }
+    .guest-edit button {
+        height: 2.5rem; min-height: 0; padding: 0 .85rem; line-height: 1;
+        display: inline-flex; align-items: center; justify-content: center;
+    }
 
     /* tabs */
     .tabs { display: flex; gap: 1.25rem; border-bottom: 1px solid var(--border); margin-top: 1.5rem; }
