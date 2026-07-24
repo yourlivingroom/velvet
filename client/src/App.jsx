@@ -180,11 +180,15 @@ function UserLink({ id, name, avatar, event, size = 24 }) {
 
 function EventList() {
     const session = useSession();
+    // `?when=past` renders the historical list; otherwise the upcoming list
+    // (which hides events whose start AND end are both past — server-filtered).
+    const past = new URLSearchParams(window.location.search).get('when') === 'past';
     const [events, setEvents] = useState(null);
     const [creating, setCreating] = useState(false);
     useEffect(() => {
-        api('/events').then(setEvents).catch(() => setEvents([]));
-    }, []);
+        api(`/events?when=${past ? 'past' : 'upcoming'}`)
+            .then(setEvents).catch(() => setEvents([]));
+    }, [past]);
 
     // Admins can spin up a blank event, then click through to fill it in. The
     // server defaults config to {}, so no body is needed beyond an empty object.
@@ -203,8 +207,8 @@ function EventList() {
         <main style={wrap}>
             <h1>velvet</h1>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                <h2 style={dim}>Your events</h2>
-                {session.isAdmin && (
+                <h2 style={dim}>{past ? 'Previous events' : 'Your events'}</h2>
+                {!past && session.isAdmin && (
                     <button onClick={create} disabled={creating}>
                         {creating ? 'Creating…' : 'Create event'}
                     </button>
@@ -213,16 +217,26 @@ function EventList() {
             {events === null ? (
                 <p>Loading…</p>
             ) : events.length === 0 ? (
-                <p>No events yet.</p>
+                <p>{past ? 'No previous events.' : 'No upcoming events.'}</p>
             ) : (
                 <ul>
                     {events.map((e) => (
                         <li key={e.id}>
                             <a href={`/events/${e.id}`}>{e.config?.title || e.id}</a>
+                            {formatWhen(e.startsAt, e.endsAt) && (
+                                <span style={{ ...dim, marginLeft: '.5rem' }}>
+                                    — {formatWhen(e.startsAt, e.endsAt)}
+                                </span>
+                            )}
                         </li>
                     ))}
                 </ul>
             )}
+            <p style={{ marginTop: '1.5rem' }}>
+                {past
+                    ? <a href="/events">← Upcoming events</a>
+                    : <a href="/events?when=past">Previous events →</a>}
+            </p>
         </main>
     );
 }

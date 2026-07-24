@@ -532,10 +532,24 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                     + 'byUser index for a scoped caller; a global admin (who can '
                     + 'see every event) is served by a full scan. Each event is '
                     + 'graded like the single GET; events you have no permission on '
-                    + 'are simply omitted (not 404 — they are not "yours").',
+                    + 'are simply omitted (not 404 — they are not "yours"). '
+                    + '`when` selects upcoming (default — hides events whose start '
+                    + 'AND end are both past), past (those, most-recent first), or '
+                    + 'all.',
             http: { method: 'GET', path: '/events' },
-            input: { type: 'object', additionalProperties: false, properties: {} },
-            handler: async (_input, ctx) => {
+            input: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    when: {
+                        type: 'string',
+                        enum: ['upcoming', 'past', 'all'],
+                        description: 'Which events to include (default upcoming). '
+                                + 'past = both start and end are before now.'
+                    }
+                }
+            },
+            handler: async ({ when = 'upcoming' }, ctx) => {
                 // Global admins (`**` / wildcard) aren't enumerated in any
                 // event's members, so they scan; everyone else queries the index
                 // by their account id (already time-ordered).
@@ -545,16 +559,24 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                 const [candidates, lists] = await Promise.all([
                     source, guestListsByEvent()
                 ]);
+                const now = new Date();
+                const nowIso = now.toISOString();
+                const openCutoff =
+                        new Date(now.getTime() - OPEN_ENDED_GRACE_MS).toISOString();
                 const out = [];
                 for (const e of candidates) {
                     const access = eventAccess(e.id, ctx);
                     if (!access.participant) continue;
+                    const past = isPastEvent(e, nowIso, openCutoff);
+                    if (when === 'upcoming' && past) continue;
+                    if (when === 'past' && !past) continue;
                     out.push(projectEvent(e, lists.get(e.id) ?? [], access));
                 }
                 // Sort in-handler too, so ordering holds whether the index was
                 // live (already ordered) or inline (unordered scan): untimed
-                // first, then by start, then end.
+                // first, then by start, then end. History reads newest-first.
                 out.sort(byStartThenEnd);
+                if (when === 'past') out.reverse();
                 return out;
             }
         },
@@ -1068,6 +1090,22 @@ function cmpTimeNullFirst(a, b) {
 function byStartThenEnd(a, b) {
     return cmpTimeNullFirst(a.startsAt, b.startsAt)
             || cmpTimeNullFirst(a.endsAt, b.endsAt);
+}
+
+// How long an open-ended event (a start, no end) lingers as "current" before we
+// consider it over.
+const OPEN_ENDED_GRACE_MS = 48 * 60 * 60 * 1000;
+
+// "Past" (for the events listing): a fully-timed event whose start AND end are
+// both before now, OR an open-ended event (start, no end) whose start is more
+// than 48h ago. An untimed event (no start) is never past. `now`/`openCutoff`
+// are ISO strings (stored times are canonical UTC ISO, so lexical compare is
+// chronological); `openCutoff` is `now - 48h`.
+function isPastEvent(event, now, openCutoff) {
+    const { startsAt, endsAt } = event;
+    if (startsAt == null) return false;                  // untimed → never past
+    if (endsAt != null) return startsAt < now && endsAt < now;
+    return startsAt < openCutoff;                        // open-ended, start stale
 }
 
 // How a caller may see an event: `admin` (full doc) if they hold its /admin

@@ -96,7 +96,13 @@ one both positionally *and* by flag is an error. No other file needs editing.
   take (e.g. the SPA's RSVP strip appears iff `access.join`). `GET /events` (`events.list`) is
   **"my events"** — no admin gate; it returns only the events you participate in
   (via `/view`/`/join`/`/admin`), each graded the same way (admins get all),
-  **ordered by time** (untimed events first, then by start, then end). It's
+  **ordered by time** (untimed events first, then by start, then end). A
+  **`when`** query param scopes it: `upcoming` (default) hides *past* events;
+  `past` returns exactly those, most-recent first; `all` returns everything.
+  `isPastEvent`: a fully-timed event is past once start *and* end are both before
+  now; an **open-ended** event (start, no end) is past once its start is more
+  than **48h** ago (`OPEN_ENDED_GRACE_MS`); an untimed event (no start) is never
+  past. It's
   backed by the **`byUser` index** (see Dogfooding): each event carries a
   denormalized `members` list — the account ids invited to or administrating it,
   mirrored from their grants by `addEventMember`/`eventIdFromGrant` on
@@ -376,8 +382,11 @@ No token touches page JS. The startup banner points the operator there.
 
 **Client routes & behaviors** (`src/App.jsx`, one tiny path router — RESTful URLs
 double as client routes via the negotiation above):
-- `/` or `/events` → your events list (a **Create event** button for global
-  admins mints a blank event and jumps into it); `/events/:eventId` → event
+- `/` or `/events` → your events list (upcoming by default, each with its
+  localized time; a **Create event** button for global admins mints a blank event
+  and jumps into it; a **Previous events →** link goes to `/events?when=past`, the
+  historical list — `?when=past` flips the same component to fetch `when=past` and
+  show a **← Upcoming events** link back); `/events/:eventId` → event
   detail: the graded view (an optional cover image from `config.picture`'s
   `$blob`, title, a localized schedule line when `startsAt`/`endsAt` are set,
   description), an edit pencil (title, description, the `startsAt`/`endsAt`
