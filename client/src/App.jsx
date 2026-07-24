@@ -134,6 +134,50 @@ const rsvpBtn = {
 };
 const rsvpBtnActive = { background: '#2563eb', color: '#fff' };
 
+// Deterministic hue from a string, so a given name always gets the same
+// placeholder color.
+function hashHue(s) {
+    let h = 0;
+    for (let i = 0; i < (s || '').length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    return Math.abs(h) % 360;
+}
+
+// A round profile picture, or — with no picture — the name's first initial in a
+// colored circle. `avatar` is the stored `{ $blob }` ref (or falsy).
+function Avatar({ name, avatar, size = 24 }) {
+    const base = {
+        width: size, height: size, borderRadius: '50%',
+        flex: '0 0 auto', objectFit: 'cover', display: 'inline-block'
+    };
+    if (avatar?.$blob) {
+        return <img src={`/blobs/${avatar.$blob}`} alt="" style={base} />;
+    }
+    const initial = (name || '').trim().charAt(0).toUpperCase() || '?';
+    return (
+        <span style={{
+            ...base, display: 'inline-flex', alignItems: 'center',
+            justifyContent: 'center', background: `hsl(${hashHue(name)} 55% 45%)`,
+            color: '#fff', fontWeight: 600, fontSize: Math.round(size * 0.5),
+            lineHeight: 1, userSelect: 'none'
+        }}>{initial}</span>
+    );
+}
+
+// A name link: mini avatar + display name, linking to the profile page. Pass
+// `event` to render the profile relative to an event (RSVP line + grant control).
+function UserLink({ id, name, avatar, event, size = 24 }) {
+    const href = `/accounts/${id}${event ? `?event=${event}` : ''}`;
+    return (
+        <a href={href} style={{
+            display: 'inline-flex', alignItems: 'center', gap: '.45rem',
+            textDecoration: 'none', color: 'inherit'
+        }}>
+            <Avatar name={name} avatar={avatar} size={size} />
+            <span>{name || id}</span>
+        </a>
+    );
+}
+
 function EventList() {
     const session = useSession();
     const [events, setEvents] = useState(null);
@@ -431,8 +475,9 @@ function EventDetail({ id }) {
             ) : (
                 <ul>
                     {guests.map((g) => (
-                        <li key={g.id}>
-                            <a href={`/accounts/${g.id}?event=${id}`}>{g.name ?? g.id}</a> — {g.response ?? 'no response'}
+                        <li key={g.id} style={{ margin: '.4rem 0' }}>
+                            <UserLink id={g.id} name={g.name} avatar={g.avatar} event={id} />
+                            {' — '}{g.response ?? 'no response'}
                             {g.guests?.length ? ` (+${g.guests.length})` : ''}
                         </li>
                     ))}
@@ -459,11 +504,42 @@ function AdminActions({ eventId }) {
     );
 }
 
+// Shared "here's your link" modal: QR + a read-only field + copy. Any flow that
+// mints an invite token (event invite, account reconnect) shows its link here.
+function InviteLinkDialog({ link, title, onClose }) {
+    const [copied, setCopied] = useState(false);
+    const copy = async () => {
+        try {
+            await navigator.clipboard.writeText(link);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+        } catch { /* clipboard unavailable — the field is selectable */ }
+    };
+    return (
+        <div style={overlay} onClick={onClose}>
+            <div style={dialog} onClick={(e) => e.stopPropagation()}>
+                <h2 style={{ marginTop: 0 }}>{title}</h2>
+                <div style={{ display: 'flex', justifyContent: 'center', margin: '1rem 0' }}>
+                    <QRCodeSVG value={link} size={180} includeMargin />
+                </div>
+                <label style={label}>Invite link</label>
+                <div style={{ display: 'flex', gap: '.5rem', margin: '.35rem 0 1rem' }}>
+                    <input style={{ ...input, margin: 0 }} readOnly value={link}
+                        onFocus={(e) => e.target.select()} />
+                    <button onClick={copy}>{copied ? 'Copied!' : 'Copy'}</button>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                    <button onClick={onClose}>Close</button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 function CreateInviteModal({ eventId, onClose }) {
     const [step, setStep] = useState('name'); // name | creating | done
     const [name, setName] = useState('');
     const [invite, setInvite] = useState(null);
-    const [copied, setCopied] = useState(false);
 
     const create = async () => {
         setStep('creating');
@@ -482,56 +558,66 @@ function CreateInviteModal({ eventId, onClose }) {
         setStep('done');
     };
 
-    // The link a redeemer follows: the /invites/ page redeems `t`, sets up their
-    // auth, then forwards to the invite's configured entrypoint (this event).
-    const link = invite
-        ? `${window.location.origin}/invites/?t=${invite.token}`
-        : '';
-
-    const copy = async () => {
-        try {
-            await navigator.clipboard.writeText(link);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
-        } catch { /* clipboard unavailable — the field is selectable */ }
-    };
+    if (step === 'done') {
+        // The link a redeemer follows: /invites/ redeems `t`, sets up their auth,
+        // then forwards to the invite's configured entrypoint (this event).
+        const link = `${window.location.origin}/invites/?t=${invite.token}`;
+        return <InviteLinkDialog link={link} title="Invite ready" onClose={onClose} />;
+    }
 
     return (
         <div style={overlay} onClick={onClose}>
             <div style={dialog} onClick={(e) => e.stopPropagation()}>
-                {step === 'done' ? (
-                    <div>
-                        <h2 style={{ marginTop: 0 }}>Invite ready</h2>
-                        <div style={{ display: 'flex', justifyContent: 'center', margin: '1rem 0' }}>
-                            <QRCodeSVG value={link} size={180} includeMargin />
-                        </div>
-                        <label style={label}>Invite link</label>
-                        <div style={{ display: 'flex', gap: '.5rem', margin: '.35rem 0 1rem' }}>
-                            <input style={{ ...input, margin: 0 }} readOnly value={link}
-                                onFocus={(e) => e.target.select()} />
-                            <button onClick={copy}>{copied ? 'Copied!' : 'Copy'}</button>
-                        </div>
-                        <div style={{ textAlign: 'right' }}>
-                            <button onClick={onClose}>Close</button>
-                        </div>
+                <div>
+                    <h2 style={{ marginTop: 0 }}>Create invite</h2>
+                    <label style={label}>Name
+                        <input style={input} value={name} autoFocus
+                            disabled={step === 'creating'}
+                            placeholder="Who's this invite for?"
+                            onChange={(e) => setName(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') create(); }} />
+                    </label>
+                    <div style={{ textAlign: 'right' }}>
+                        <button onClick={onClose} disabled={step === 'creating'}>Cancel</button>{' '}
+                        <button onClick={create} disabled={step === 'creating'}>Create</button>
                     </div>
-                ) : (
-                    <div>
-                        <h2 style={{ marginTop: 0 }}>Create invite</h2>
-                        <label style={label}>Name
-                            <input style={input} value={name} autoFocus
-                                disabled={step === 'creating'}
-                                placeholder="Who's this invite for?"
-                                onChange={(e) => setName(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === 'Enter') create(); }} />
-                        </label>
-                        <div style={{ textAlign: 'right' }}>
-                            <button onClick={onClose} disabled={step === 'creating'}>Cancel</button>{' '}
-                            <button onClick={create} disabled={step === 'creating'}>Create</button>
-                        </div>
-                    </div>
-                )}
+                </div>
             </div>
+        </div>
+    );
+}
+
+// Admin affordance on a profile page: mint a link that re-establishes a session
+// for THIS account (redeeming logs in as them, existing grants intact) — for
+// helping a logged-out person reconnect under their profile. Global-admin only
+// (see accounts.reconnect); the link is shown once via InviteLinkDialog.
+function ReconnectButton({ accountId }) {
+    const [state, setState] = useState('idle'); // idle | creating | done
+    const [invite, setInvite] = useState(null);
+
+    const create = async () => {
+        setState('creating');
+        const r = await api(`/accounts/${accountId}/reconnect`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        if (!r || r.error) { setState('idle'); return; }
+        setInvite(r);
+        setState('done');
+    };
+
+    return (
+        <div style={{ margin: '.6rem 0' }}>
+            <button onClick={create} disabled={state === 'creating'}>
+                {state === 'creating' ? 'Creating…' : 'New invite link'}
+            </button>
+            {' '}<span style={dim}>Reconnect this person under their existing profile.</span>
+            {state === 'done' && (
+                <InviteLinkDialog title="Reconnect link"
+                    link={`${window.location.origin}/invites/?t=${invite.token}`}
+                    onClose={() => setState('idle')} />
+            )}
         </div>
     );
 }
@@ -585,6 +671,8 @@ function GrantRow({ label, path, accountId, grants, onChange }) {
 // (for an admin of that event) an event-admin grant control.
 function AccountPage({ accountId }) {
     const [name, setName] = useState('');
+    const [avatar, setAvatar] = useState('');        // current pic ref, '' if none
+    const [uploadPct, setUploadPct] = useState(null); // null = idle, 0..1 = busy
     const [grants, setGrants] = useState(undefined); // array iff we may see it
     const [state, setState] = useState('loading'); // loading | ready | missing | saving
     // undefined = no event context / not resolvable; { response } once known.
@@ -598,11 +686,28 @@ function AccountPage({ accountId }) {
         .then((a) => {
             if (!a || a.error) { setState('missing'); return; }
             setName(a.name ?? '');
+            setAvatar(a.avatar?.$blob ?? '');   // present in full + public views
             setGrants(a.grants);   // present only in the owner/admin full view
             setState('ready');
         })
         .catch(() => setState('missing'));
     useEffect(() => { loadAccount(); }, [accountId]);
+
+    // Profile picture: upload to this account's own bucket (owner-or-admin
+    // writes), stash the ref, persist on Save. The 2 MB evict-oldest bucket
+    // means old pictures purge themselves as you upload new ones.
+    const pickImage = async (e) => {
+        const file = e.target.files?.[0];
+        e.target.value = '';
+        if (!file) return;
+        setUploadPct(0);
+        try {
+            const ref = await uploadBlob(`accounts/${accountId}`, file, setUploadPct);
+            setAvatar(ref);
+        }
+        catch { /* keep the prior picture */ }
+        setUploadPct(null);
+    };
 
     // Event context: read this account's RSVP out of the event's guest list
     // (which we can see as a participant), and note whether *we* admin it.
@@ -638,6 +743,7 @@ function AccountPage({ accountId }) {
                 <GrantRow label="Full admin (**)" path="**"
                     accountId={accountId} grants={grants} onChange={loadAccount} />
             )}
+            {session.isAdmin && <ReconnectButton accountId={accountId} />}
         </div>
     ) : null;
 
@@ -651,7 +757,7 @@ function AccountPage({ accountId }) {
         await api(`/accounts/${accountId}`, {
             method: 'PATCH',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ name })
+            body: JSON.stringify({ name, avatar: avatar || null })
         });
         goBack();
     };
@@ -665,22 +771,39 @@ function AccountPage({ accountId }) {
                 <p>Profile not found.</p>
             ) : mine ? (
                 <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem' }}>
+                        <Avatar name={name} avatar={avatar ? { $blob: avatar } : null} size={72} />
+                        <div>
+                            {uploadPct !== null ? (
+                                <progress value={uploadPct} max={1} style={{ width: '12rem' }} />
+                            ) : (
+                                <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center' }}>
+                                    <input type="file" accept="image/*" onChange={pickImage} />
+                                    {avatar && (
+                                        <button type="button" onClick={() => setAvatar('')}>Remove</button>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    </div>
                     <label style={label}>Display name
                         <input style={input} value={name} autoFocus
                             onChange={(e) => setName(e.target.value)} />
                     </label>
                     {rsvpLine}
                     <div>
-                        <button onClick={save} disabled={state === 'saving'}>Save</button>{' '}
+                        <button onClick={save} disabled={state === 'saving' || uploadPct !== null}>Save</button>{' '}
                         <button onClick={goBack} disabled={state === 'saving'}>Cancel</button>
                     </div>
                 </div>
             ) : (
                 <div>
-                    <p style={label}>Display name</p>
-                    <p style={{ margin: '.35rem 0 .25rem' }}>{name || 'Unnamed'}</p>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <Avatar name={name} avatar={avatar ? { $blob: avatar } : null} size={72} />
+                        <p style={{ margin: 0, fontSize: '1.25rem' }}>{name || 'Unnamed'}</p>
+                    </div>
                     {rsvpLine}
-                    <button onClick={goBack}>← Back</button>
+                    <p><button onClick={goBack}>← Back</button></p>
                     {adminControls}
                 </div>
             )}

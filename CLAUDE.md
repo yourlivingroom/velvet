@@ -125,22 +125,33 @@ one both positionally *and* by flag is an error. No other file needs editing.
 - `accounts` — non-admin identities, auto-created (and bound to the invite) on
   first redemption, carrying the invite's `grants` and `name`; a JWT's `sub` is
   an account id. `accounts.update` (`PATCH /accounts/:accountId`) is
-  **owner-or-admin** (`ownAccountOrAdmin` helper) and sets only `name` (never
-  grants — no self-escalation). `accounts.get` is **graded**: owner/admin get
-  the full doc, any other signed-in caller a whitelisted public view
-  (`{ id, name }` — names already show in guest lists, but grants/bindings never
-  leak), anonymous callers 404. The guest list's `name` is sourced from the
-  account, so editing your name updates it everywhere; guest names link to
-  `/accounts/:id` (read-only unless it's you), and `?event=` renders that page
-  relative to the event (RSVP line + an event-admin grant control).
+  **owner-or-admin** (`ownAccountOrAdmin` helper) and sets `name` and `avatar`
+  (never grants — no self-escalation). **`avatar`** is a profile picture, stored
+  as a `{ $blob }` ref into the account's *own* `accounts/<id>` bucket (see Blob
+  storage; a cheap string check rejects a ref to any other bucket — 422; `null`
+  clears). That bucket is 2 MB + evict-oldest, so new uploads purge stale
+  pictures. `accounts.get` is **graded**: owner/admin get the full doc, any other
+  signed-in caller a whitelisted public view (`{ id, name, avatar }` — name +
+  avatar already show in guest lists, but grants/bindings never leak), anonymous
+  callers 404. The guest list's `name`/`avatar` are sourced from the account, so
+  editing either updates it everywhere; guest names render as a `UserLink`
+  (mini avatar or initial-in-a-colored-circle + name) linking to `/accounts/:id`
+  (read-only unless it's you), and `?event=` renders that page relative to the
+  event (RSVP line + an event-admin grant control).
   `accounts.grant`/`revoke` (`POST`/`DELETE /accounts/:accountId/grants`,
   field `grant`) add/remove one permission glob on an account, under a
   **confer-only-what-you-hold** rule (`ctx.assertPermission(grant)`): a `**`
   holder grants anything, an event admin only that event's `/admin`. Idempotent,
   and effective on the target's next request (grants resolve per-request, never
   frozen into a JWT). Kept off `accounts.update` to preserve its no-escalation
-  invariant. `sessions` — still a
-  placeholder stand-in.
+  invariant. `accounts.reconnect` (`POST /accounts/:accountId/reconnect`,
+  `requires: /server/admin`) mints an invite **pre-bound to this account** — its
+  `accountId` is set at creation, so `redeemInvite` takes its already-bound
+  branch (returns this account, creates none), letting a logged-out person
+  re-establish a session under their **existing** profile (with its existing
+  grants). **Global-admin only** — the link is full access to the account, so
+  event admins can't mint one. Token shown once (like `invites.create`).
+  `sessions` — still a placeholder stand-in.
 
 ## Auth model
 
@@ -368,11 +379,20 @@ double as client routes via the negotiation above):
   accordion (Create invite) both gated on `access.admin` (so event admins see
   them), an RSVP strip gated on `access.join`, and a guest list whose names link
   to profiles.
-- `/accounts/:accountId` → profile page: editable only for your own account
-  (peers get a read-only `{ id, name }` view); `?event=<eventId>` renders it
-  relative to that event — the account's RSVP status line plus, for an admin of
-  that event, a grant/revoke control (event admin, and full `**` for global
-  admins).
+- `/accounts/:accountId` → profile page: editable only for your own account —
+  display name **and a profile-picture upload** (to your `accounts/<id>` bucket
+  via the resumable protocol + `<progress>` bar; the `$blob` ref is saved through
+  `accounts.update`) — peers get a read-only `{ id, name, avatar }` view;
+  `?event=<eventId>` renders it relative to that event — the account's RSVP
+  status line plus, for an admin of that event, a grant/revoke control (event
+  admin, and full `**` for global admins). A **global** admin also gets a "New
+  invite link" button here (`accounts.reconnect`) that mints a link to reconnect
+  that person under their existing profile — shown via the shared
+  `<InviteLinkDialog>` (QR + copyable link), the same modal event invites use.
+  The `<UserLink>` component (mini
+  `<Avatar>` — the picture, or the name's first initial in a color-hashed circle
+  — + name, linking to the profile) renders every name link, e.g. the event
+  guest list.
 - `/invites/?t=<token>` → the redeem landing: POSTs the token to the BFF
   `/session/invite` (sets the cookie server-side, returns only `{entrypoint}`) and
   forwards there via `location.replace` (keeping the token out of history).

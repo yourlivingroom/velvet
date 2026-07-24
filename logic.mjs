@@ -179,14 +179,16 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
         const [rows, accts] = await Promise.all([
             reservations.list(), accountCol.listDocs()
         ]);
-        const nameById = new Map(accts.map(a => [a.id, a.name]));
+        const acctById = new Map(accts.map(a => [a.id, a]));
         const byEvent = new Map();
         for (const { value } of rows) {
             if (!value?.eventId) continue;
             if (!byEvent.has(value.eventId)) byEvent.set(value.eventId, []);
+            const acct = acctById.get(value.accountId);
             byEvent.get(value.eventId).push({
                 id: value.accountId,
-                name: nameById.get(value.accountId),
+                name: acct?.name,
+                avatar: acct?.avatar,   // { $blob } profile pic, if set — for name links
                 response: value.response,
                 guests: value.guests ?? []
             });
@@ -626,12 +628,13 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                 if (!account) return null;                       // 404
                 if (ownAccountOrAdmin(accountId, ctx)) return account;
                 if (!ctx.auth?.sub) return null;                 // must be signed in
-                return { id: account.id, name: account.name };   // public view
+                // Public view: name + avatar already surface via guest lists.
+                return { id: account.id, name: account.name, avatar: account.avatar };
             }
         },
 
         'accounts.update': {
-            summary: 'Edit an account — currently just its display name.',
+            summary: 'Edit an account — its display name and profile picture.',
             http: { method: 'PATCH', path: '/accounts/:accountId' },
             input: {
                 type: 'object',
@@ -639,16 +642,37 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                 required: ['accountId'],
                 properties: {
                     accountId: { type: 'string', description: 'Account id (acct_…).' },
-                    name: { type: 'string', description: 'Display name.' }
+                    name: { type: 'string', description: 'Display name.' },
+                    avatar: {
+                        type: ['string', 'null'],
+                        description: "Profile-picture blob ref (a $blob path in "
+                                + "the account's own accounts/<id> bucket), or "
+                                + 'null to clear. Omit to leave unchanged.'
+                    }
                 }
             },
-            // Only `name` is settable here — never grants (no self-escalation).
-            handler: async ({ accountId, name }, ctx) => {
+            // Only `name`/`avatar` are settable here — never grants (no
+            // self-escalation). The avatar must reference the account's OWN
+            // bucket (cheap string check; blob reads are permission-gated anyway).
+            handler: async ({ accountId, name, avatar }, ctx) => {
                 if (!ownAccountOrAdmin(accountId, ctx)) return null;   // 404 hide
+                if (avatar) {
+                    const own = new RegExp(
+                            `^accounts/${accountId}/blb_[0-9a-f]+$`).test(avatar);
+                    if (!own) {
+                        throw new ClientError(
+                                "avatar must reference this account's own bucket",
+                                422);
+                    }
+                }
                 const { newValue } = await accounts.edit(
                         `${accountId}.json`, (draft) => {
                             if (!draft) return;
                             if (name !== undefined) draft.name = name;
+                            if (avatar !== undefined) {
+                                if (avatar) draft.avatar = { $blob: avatar };
+                                else delete draft.avatar;   // '' or null clears
+                            }
                         });
                 return newValue ?? null;
             }
@@ -725,6 +749,47 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                         });
                 return ownAccountOrAdmin(accountId, ctx)
                         ? newValue : { id: newValue.id, name: newValue.name };
+            }
+        },
+
+        'accounts.reconnect': {
+            summary: 'Mint a one-time link to re-establish a session for an '
+                    + 'existing account.',
+            description: 'Creates an invite token **pre-bound to this account**: '
+                    + 'redeeming it logs the holder in AS this account (with its '
+                    + 'existing grants), rather than creating a new one — for '
+                    + 'helping someone who was logged out reconnect under their '
+                    + 'existing profile. Because the link confers full access to '
+                    + 'the account, it is **global-admin only** (not event '
+                    + 'admins). The secret `token` is shown once, here (put it in '
+                    + 'a /invites/?t=… link).',
+            requires: '/server/admin',
+            http: { method: 'POST', path: '/accounts/:accountId/reconnect' },
+            input: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['accountId'],
+                properties: {
+                    accountId: { type: 'string', description: 'Account id (acct_…).' },
+                    entrypoint: {
+                        type: 'string',
+                        pattern: '^/(?!/)',
+                        description: 'Same-origin relative path to land on after '
+                                + 'redeem (optional; defaults to /).'
+                    }
+                }
+            },
+            // `requires` already gated global admin. Pre-set `accountId` so
+            // redeemInvite takes its already-bound branch (returns this account,
+            // creates none). awaitIndex so the fresh token is redeemable at once.
+            handler: async ({ accountId, entrypoint }, ctx) => {
+                const account = await accountCol.getDoc(accountId);
+                if (!account) return null;   // 404
+                return inviteCol.createDoc({
+                    token: crypto.randomBytes(24).toString('hex'),
+                    accountId,
+                    ...stripUndefined({ entrypoint })
+                }, { awaitIndex: true });
             }
         },
 
