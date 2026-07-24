@@ -268,6 +268,44 @@ function RsvpStrip({ eventId, current, guests, onDone }) {
     );
 }
 
+// The event cover as a full-view wallpaper. It fills the viewport in "cover" mode;
+// but if the image is too small to cover without noticeable upscaling, it's shown
+// centered at its natural size over a blurred, enlarged copy of itself. Whether
+// it's "too small" is a measurement (image natural size vs viewport) — a JS datum
+// handed to CSS as `data-fit`; CSS owns every actual look (cover, blur, scale,
+// scrim), tunable via --wallpaper-blur / --event-scrim etc.
+const WALLPAPER_UPSCALE_LIMIT = 1.1;   // tolerate a slight cover upscale before switching to center+blur
+function EventWallpaper({ src }) {
+    const [fit, setFit] = useState('cover');   // 'cover' | 'center'
+    useEffect(() => {
+        if (!src) return;
+        const img = new Image();
+        img.src = src;
+        const decide = () => {
+            if (!img.naturalWidth) return;
+            const coverScale = Math.max(
+                window.innerWidth / img.naturalWidth,
+                window.innerHeight / img.naturalHeight);
+            setFit(coverScale > WALLPAPER_UPSCALE_LIMIT ? 'center' : 'cover');
+        };
+        img.onload = decide;
+        if (img.complete) decide();                 // already cached
+        window.addEventListener('resize', decide);   // re-decide on viewport change
+        return () => window.removeEventListener('resize', decide);
+    }, [src]);
+    // No cover → a default gradient wallpaper (themeable via --event-gradient).
+    if (!src) {
+        return <div className="event-wallpaper event-wallpaper--gradient" aria-hidden="true" />;
+    }
+    return (
+        <div className="event-wallpaper" data-fit={fit} aria-hidden="true"
+            style={{ '--wallpaper': `url("${src}")` }}>
+            <div className="event-wallpaper__backdrop" />
+            <img className="event-wallpaper__fg" src={src} alt="" />
+        </div>
+    );
+}
+
 function EventDetail({ id }) {
     const session = useSession();
     const [event, setEvent] = useState(undefined);
@@ -372,9 +410,18 @@ function EventDetail({ id }) {
         setEditing(false);
     };
 
+    // The cover is the page's wallpaper in both view and edit mode, so editing
+    // looks the same — the form just fills the panel. While editing it tracks the
+    // *pending* pick (form.picture), so the wallpaper live-previews cover changes.
+    // No cover → EventWallpaper falls back to the default gradient.
+    const activeCover = editing ? form.picture : (config.picture?.$blob ?? '');
+    const coverUrl = activeCover ? `/blobs/${activeCover}` : null;
+
     return (
-        <main>
+        <main className="event-page">
+            <EventWallpaper src={coverUrl} />
             <p className="back"><a href="/events">← events</a></p>
+            <div className="event-body">
 
             {editing ? (
                 <div>
@@ -407,10 +454,7 @@ function EventDetail({ id }) {
                     </label>
                     <label>Cover image</label>
                     <div className="cover-edit">
-                        {form.picture && (
-                            <img className="cover-preview" src={`/blobs/${form.picture}`}
-                                alt="Cover preview" />
-                        )}
+                        {/* the wallpaper behind is the live preview */}
                         {uploadPct !== null ? (
                             <progress value={uploadPct} max={1} />
                         ) : (
@@ -433,9 +477,7 @@ function EventDetail({ id }) {
             ) : (
                 <div className="event-detail__header">
                     <div>
-                        {config.picture?.$blob && (
-                            <img className="event-cover" src={`/blobs/${config.picture.$blob}`} alt="" />
-                        )}
+                        {/* the cover is now the full-view wallpaper (behind) */}
                         <h1>{config.title || event.id}</h1>
                         {formatWhen(event.startsAt, event.endsAt) && (
                             <p className="event-when">{formatWhen(event.startsAt, event.endsAt)}</p>
@@ -471,6 +513,7 @@ function EventDetail({ id }) {
             {event.access?.admin && <AdminActions eventId={id} />}
 
             <Rsvps guests={guests} eventId={id} />
+            </div>
         </main>
     );
 }

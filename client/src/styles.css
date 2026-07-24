@@ -126,6 +126,42 @@
     .cover-preview { display: block; max-width: 100%; border-radius: var(--radius-sm); margin-bottom: .5rem; }
     .file-row { display: flex; gap: .5rem; align-items: center; }
 
+    /* event cover as a full-view wallpaper. JS sets data-fit (a measurement);
+       CSS owns the looks. `cover` fills the viewport; `center` shows the image at
+       natural size over a blurred, enlarged copy of itself (for small images). */
+    .event-wallpaper { position: fixed; inset: 0; z-index: -1; overflow: hidden; background: var(--bg); }
+    /* fallback wallpaper when an event has no cover image */
+    .event-wallpaper--gradient { background: var(--event-gradient, linear-gradient(135deg, #e11d48, #7e22ce)); }
+    .event-wallpaper__backdrop {
+        position: absolute; inset: 0;
+        background: var(--wallpaper) center / cover no-repeat;
+        filter: blur(var(--wallpaper-blur, 44px)) brightness(.85);
+        transform: scale(var(--wallpaper-backdrop-scale, 1.25));
+    }
+    .event-wallpaper__fg { position: absolute; inset: 0; width: 100%; height: 100%; object-position: center; }
+    .event-wallpaper[data-fit="cover"] .event-wallpaper__fg { object-fit: cover; }
+    .event-wallpaper[data-fit="cover"] .event-wallpaper__backdrop { display: none; }
+    .event-wallpaper[data-fit="center"] .event-wallpaper__fg { object-fit: none; }
+    /* optional readability scrim over the wallpaper, below the content — off by
+       default; set --event-scrim (e.g. a gradient or rgba) to bring it back. */
+    .event-wallpaper::after {
+        content: ""; position: absolute; inset: 0;
+        background: var(--event-scrim, transparent);
+    }
+
+    /* the event content, floating over the wallpaper in a frosted panel */
+    .event-page > .back a { color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, .55); }
+    .event-page .event-body {
+        background: var(--surface);   /* fallback where color-mix is unsupported */
+        background: var(--event-panel, color-mix(in srgb, var(--surface) 85%, transparent));
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        padding: 1.25rem 1.5rem;
+    }
+
     /* RSVP segmented control */
     .rsvp { display: inline-flex; margin: 1.25rem 0; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); overflow: hidden; }
     .rsvp__option { border: none; border-radius: 0; background: var(--surface); padding: .5rem 1.1rem; }
