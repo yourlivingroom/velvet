@@ -91,7 +91,10 @@ one both positionally *and* by flag is an error. No other file needs editing.
   them); anyone else → 404 (hide). An event also has a **blob bucket**
   `events/<id>` (see Blob storage) — writable by its admin, readable by
   participants; the SPA stores a cover image there and references it from
-  `config.picture` as `{ $blob: 'events/<id>/blb_…' }`. Both views also carry an **`access`**
+  `config.picture` as `{ $blob: 'events/<id>/blb_…' }`. Other config keys the SPA
+  renders: `config.location` (shown to invitees, linked to `config.locationHref`
+  when that's a safe-scheme URL — `safeHref` blocks `javascript:`/`data:` since
+  an admin's config reaches invitees). Both views also carry an **`access`**
   block (`{ admin, join }`) so a client offers only the actions the viewer may
   take (e.g. the SPA's RSVP strip appears iff `access.join`). `GET /events` (`events.list`) is
   **"my events"** — no admin gate; it returns only the events you participate in

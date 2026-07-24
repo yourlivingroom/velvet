@@ -272,6 +272,14 @@ function toLocalInput(iso) {
 // new Date(local).toISOString() anchors it to the viewer's timezone.
 const localInputToIso = (v) => (v ? new Date(v).toISOString() : null);
 
+// Only surface a config-supplied URL as a link if it's a safe scheme — config is
+// set by event admins but rendered to invitees, so a `javascript:`/`data:` href
+// would be stored XSS. Returns the url when safe, else null (render as plain text).
+function safeHref(url) {
+    return typeof url === 'string' && /^(https?:|mailto:|geo:|tel:)/i.test(url.trim())
+        ? url.trim() : null;
+}
+
 // Human-readable schedule line, or null when neither bound is set.
 function formatWhen(startsAt, endsAt) {
     const fmt = (iso) => new Date(iso).toLocaleString([], {
@@ -326,7 +334,8 @@ function EventDetail({ id }) {
     const [event, setEvent] = useState(undefined);
     const [editing, setEditing] = useState(false);
     const [form, setForm] = useState({
-        title: '', description: '', startsAt: '', endsAt: '', picture: ''
+        title: '', description: '', startsAt: '', endsAt: '', picture: '',
+        location: '', locationHref: ''
     });
     const [saving, setSaving] = useState(false);
     const [uploadPct, setUploadPct] = useState(null);   // null = idle, 0..1 = busy
@@ -357,7 +366,9 @@ function EventDetail({ id }) {
             description: config.description ?? '',
             startsAt: toLocalInput(event.startsAt),
             endsAt: toLocalInput(event.endsAt),
-            picture: config.picture?.$blob ?? ''   // the current cover's ref
+            picture: config.picture?.$blob ?? '',   // the current cover's ref
+            location: config.location ?? '',
+            locationHref: config.locationHref ?? ''
         });
         setEditing(true);
     };
@@ -386,6 +397,17 @@ function EventDetail({ id }) {
             patch.push({ op: 'add', path: '/description', value: form.description });
         } else if (config.description !== undefined) {
             patch.push({ op: 'remove', path: '/description' });
+        }
+        if (form.location) {
+            patch.push({ op: 'add', path: '/location', value: form.location });
+        } else if (config.location !== undefined) {
+            patch.push({ op: 'remove', path: '/location' });
+        }
+        // Only keep a link if there's a location to attach it to.
+        if (form.location && form.locationHref) {
+            patch.push({ op: 'add', path: '/locationHref', value: form.locationHref });
+        } else if (config.locationHref !== undefined) {
+            patch.push({ op: 'remove', path: '/locationHref' });
         }
         // Cover image ref (`add` also replaces an existing member per RFC 6902).
         if (form.picture) {
@@ -424,6 +446,17 @@ function EventDetail({ id }) {
                     <label style={label}>Description
                         <textarea style={{ ...input, minHeight: '5rem' }} value={form.description}
                             onChange={(e) => setForm({ ...form, description: e.target.value })} />
+                    </label>
+                    <label style={label}>Location
+                        <input style={input} value={form.location}
+                            placeholder="e.g. Grandma's house"
+                            onChange={(e) => setForm({ ...form, location: e.target.value })} />
+                    </label>
+                    <label style={label}>Location link (optional)
+                        <input style={input} type="url" value={form.locationHref}
+                            placeholder="https://maps.example.com/…"
+                            disabled={!form.location}
+                            onChange={(e) => setForm({ ...form, locationHref: e.target.value })} />
                     </label>
                     <label style={label}>Starts
                         <input style={input} type="datetime-local" value={form.startsAt}
@@ -472,6 +505,16 @@ function EventDetail({ id }) {
                         {formatWhen(event.startsAt, event.endsAt) && (
                             <p style={{ ...dim, margin: '.4rem 0 0' }}>
                                 {formatWhen(event.startsAt, event.endsAt)}
+                            </p>
+                        )}
+                        {config.location && (
+                            <p style={{ ...dim, margin: '.4rem 0 0' }}>
+                                {safeHref(config.locationHref) ? (
+                                    <a href={safeHref(config.locationHref)}
+                                        target="_blank" rel="noopener noreferrer">
+                                        {config.location}
+                                    </a>
+                                ) : config.location}
                             </p>
                         )}
                         {config.description && <p style={{ marginTop: '.5rem' }}>{config.description}</p>}
