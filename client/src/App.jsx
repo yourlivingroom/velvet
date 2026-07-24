@@ -94,56 +94,9 @@ async function uploadBlob(bucket, file, onProgress) {
 const SessionContext = React.createContext(null);
 const useSession = () => useContext(SessionContext);
 
-const wrap = {
-    font: '16px/1.5 system-ui', maxWidth: 640, margin: '3rem auto', padding: '0 1rem'
-};
-const dim = { fontSize: '1rem', color: '#666' };
-const label = { display: 'block', color: '#666', fontSize: '.9rem' };
-const input = {
-    width: '100%', padding: '.5rem', margin: '.35rem 0 1rem',
-    boxSizing: 'border-box', font: 'inherit'
-};
-const iconBtn = {
-    border: 'none', background: 'none', cursor: 'pointer', fontSize: '1.3rem',
-    lineHeight: 1, padding: '.25rem'
-};
-const overlay = {
-    position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)',
-    display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20
-};
-const dialog = {
-    background: '#fff', borderRadius: 8, padding: '1.5rem',
-    width: 'min(90vw, 360px)', boxShadow: '0 8px 32px rgba(0,0,0,.2)'
-};
-const menu = {
-    position: 'absolute', top: '100%', right: 0, marginTop: '.35rem',
-    background: '#fff', border: '1px solid #ddd', borderRadius: 8,
-    boxShadow: '0 4px 16px rgba(0,0,0,.12)', minWidth: 150, overflow: 'hidden'
-};
-const menuItem = {
-    display: 'block', width: '100%', textAlign: 'left', border: 'none',
-    background: 'none', cursor: 'pointer', font: 'inherit', padding: '.6rem .9rem',
-    color: 'inherit', textDecoration: 'none', boxSizing: 'border-box'
-};
-const rsvpStrip = {
-    display: 'inline-flex', border: '1px solid #ccc', borderRadius: 8, overflow: 'hidden'
-};
-const rsvpBtn = {
-    border: 'none', background: '#fff', cursor: 'pointer', font: 'inherit',
-    padding: '.5rem 1.1rem'
-};
-const rsvpBtnActive = { background: '#2563eb', color: '#fff' };
-const tabBtnStyle = {
-    border: 'none', background: 'none', cursor: 'pointer', font: 'inherit',
-    padding: '.5rem 0', marginBottom: -1, color: '#666',
-    borderBottom: '2px solid transparent'
-};
-const tabBtnActive = {
-    color: 'inherit', fontWeight: 600, borderBottomColor: '#2563eb'
-};
-
 // Deterministic hue from a string, so a given name always gets the same
-// placeholder color.
+// placeholder color. Handed to CSS as the `--avatar-hue` custom property (a data
+// hook, not a baked look) so a theme decides how — or whether — to use it.
 function hashHue(s) {
     let h = 0;
     for (let i = 0; i < (s || '').length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
@@ -153,21 +106,16 @@ function hashHue(s) {
 // A round profile picture, or — with no picture — the name's first initial in a
 // colored circle. `avatar` is the stored `{ $blob }` ref (or falsy).
 function Avatar({ name, avatar, size = 24 }) {
-    const base = {
-        width: size, height: size, borderRadius: '50%',
-        flex: '0 0 auto', objectFit: 'cover', display: 'inline-block'
-    };
+    const cls = `avatar${size >= 48 ? ' avatar--lg' : ''}`;
     if (avatar?.$blob) {
-        return <img src={`/blobs/${avatar.$blob}`} alt="" style={base} />;
+        return <img className={cls} src={`/blobs/${avatar.$blob}`} alt="" />;
     }
     const initial = (name || '').trim().charAt(0).toUpperCase() || '?';
     return (
-        <span style={{
-            ...base, display: 'inline-flex', alignItems: 'center',
-            justifyContent: 'center', background: `hsl(${hashHue(name)} 55% 45%)`,
-            color: '#fff', fontWeight: 600, fontSize: Math.round(size * 0.5),
-            lineHeight: 1, userSelect: 'none'
-        }}>{initial}</span>
+        <span className={`${cls} avatar--placeholder`}
+            style={{ '--avatar-hue': hashHue(name) }}>
+            {initial}
+        </span>
     );
 }
 
@@ -176,12 +124,9 @@ function Avatar({ name, avatar, size = 24 }) {
 function UserLink({ id, name, avatar, event, size = 24 }) {
     const href = `/accounts/${id}${event ? `?event=${event}` : ''}`;
     return (
-        <a href={href} style={{
-            display: 'inline-flex', alignItems: 'center', gap: '.45rem',
-            textDecoration: 'none', color: 'inherit'
-        }}>
+        <a className="user-link" href={href}>
             <Avatar name={name} avatar={avatar} size={size} />
-            <span>{name || id}</span>
+            <span className="user-link__name">{name || id}</span>
         </a>
     );
 }
@@ -212,10 +157,10 @@ function EventList() {
     };
 
     return (
-        <main style={wrap}>
+        <main>
             <h1>velvet</h1>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                <h2 style={dim}>{past ? 'Previous events' : 'Your events'}</h2>
+            <div className="list-head">
+                <h2>{past ? 'Previous events' : 'Your events'}</h2>
                 {!past && session.isAdmin && (
                     <button onClick={create} disabled={creating}>
                         {creating ? 'Creating…' : 'Create event'}
@@ -232,7 +177,7 @@ function EventList() {
                         <li key={e.id}>
                             <a href={`/events/${e.id}`}>{e.config?.title || e.id}</a>
                             {formatWhen(e.startsAt, e.endsAt) && (
-                                <span style={{ ...dim, marginLeft: '.5rem' }}>
+                                <span className="event-list__time">
                                     — {formatWhen(e.startsAt, e.endsAt)}
                                 </span>
                             )}
@@ -240,7 +185,7 @@ function EventList() {
                     ))}
                 </ul>
             )}
-            <p style={{ marginTop: '1.5rem' }}>
+            <p className="list-nav">
                 {past
                     ? <a href="/events">← Upcoming events</a>
                     : <a href="/events?when=past">Previous events →</a>}
@@ -308,23 +253,17 @@ function RsvpStrip({ eventId, current, guests, onDone }) {
         setSaving(false);
     };
     return (
-        <div style={{ margin: '1.25rem 0' }}>
-            <div style={rsvpStrip}>
-                {RSVP_OPTIONS.map((o, i) => {
-                    const active = o.value === current;
-                    return (
-                        <button key={o.value} onClick={() => set(o.value)}
-                            disabled={saving} aria-pressed={active}
-                            style={{
-                                ...rsvpBtn,
-                                ...(i > 0 ? { borderLeft: '1px solid #ccc' } : {}),
-                                ...(active ? rsvpBtnActive : {})
-                            }}>
-                            {o.label}
-                        </button>
-                    );
-                })}
-            </div>
+        <div className="rsvp">
+            {RSVP_OPTIONS.map((o) => {
+                const active = o.value === current;
+                return (
+                    <button key={o.value} onClick={() => set(o.value)}
+                        disabled={saving} aria-pressed={active}
+                        className={`rsvp__option${active ? ' rsvp__option--active' : ''}`}>
+                        {o.label}
+                    </button>
+                );
+            })}
         </div>
     );
 }
@@ -344,12 +283,12 @@ function EventDetail({ id }) {
     useEffect(() => { load(); }, [id]);
 
     if (event === undefined) {
-        return <main style={wrap}><p>Loading…</p></main>;
+        return <main><p>Loading…</p></main>;
     }
     if (!event || event.error) {
         return (
-            <main style={wrap}>
-                <p><a href="/events">← events</a></p>
+            <main>
+                <p className="back"><a href="/events">← events</a></p>
                 <p>Event not found.</p>
             </main>
         );
@@ -434,50 +373,48 @@ function EventDetail({ id }) {
     };
 
     return (
-        <main style={wrap}>
-            <p><a href="/events">← events</a></p>
+        <main>
+            <p className="back"><a href="/events">← events</a></p>
 
             {editing ? (
                 <div>
-                    <label style={label}>Title
-                        <input style={input} value={form.title} autoFocus
+                    <label>Title
+                        <input value={form.title} autoFocus
                             onChange={(e) => setForm({ ...form, title: e.target.value })} />
                     </label>
-                    <label style={label}>Description
-                        <textarea style={{ ...input, minHeight: '5rem' }} value={form.description}
+                    <label>Description
+                        <textarea value={form.description}
                             onChange={(e) => setForm({ ...form, description: e.target.value })} />
                     </label>
-                    <label style={label}>Location
-                        <input style={input} value={form.location}
+                    <label>Location
+                        <input value={form.location}
                             placeholder="e.g. Grandma's house"
                             onChange={(e) => setForm({ ...form, location: e.target.value })} />
                     </label>
-                    <label style={label}>Location link (optional)
-                        <input style={input} type="url" value={form.locationHref}
+                    <label>Location link (optional)
+                        <input type="url" value={form.locationHref}
                             placeholder="https://maps.example.com/…"
                             disabled={!form.location}
                             onChange={(e) => setForm({ ...form, locationHref: e.target.value })} />
                     </label>
-                    <label style={label}>Starts
-                        <input style={input} type="datetime-local" value={form.startsAt}
+                    <label>Starts
+                        <input type="datetime-local" value={form.startsAt}
                             onChange={(e) => setForm({ ...form, startsAt: e.target.value })} />
                     </label>
-                    <label style={label}>Ends
-                        <input style={input} type="datetime-local" value={form.endsAt}
+                    <label>Ends
+                        <input type="datetime-local" value={form.endsAt}
                             onChange={(e) => setForm({ ...form, endsAt: e.target.value })} />
                     </label>
-                    <label style={label}>Cover image</label>
-                    <div style={{ margin: '.35rem 0 1rem' }}>
+                    <label>Cover image</label>
+                    <div className="cover-edit">
                         {form.picture && (
-                            <img src={`/blobs/${form.picture}`} alt="Cover preview"
-                                style={{ display: 'block', maxWidth: '100%',
-                                    borderRadius: 6, marginBottom: '.5rem' }} />
+                            <img className="cover-preview" src={`/blobs/${form.picture}`}
+                                alt="Cover preview" />
                         )}
                         {uploadPct !== null ? (
-                            <progress value={uploadPct} max={1}
-                                style={{ width: '100%' }} />
+                            <progress value={uploadPct} max={1} />
                         ) : (
-                            <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center' }}>
+                            <div className="file-row">
                                 <input type="file" accept="image/*" onChange={pickImage} />
                                 {form.picture && (
                                     <button type="button"
@@ -488,27 +425,23 @@ function EventDetail({ id }) {
                             </div>
                         )}
                     </div>
-                    <div>
-                        <button onClick={save} disabled={saving || uploadPct !== null}>Save</button>{' '}
+                    <div className="actions">
+                        <button onClick={save} disabled={saving || uploadPct !== null}>Save</button>
                         <button onClick={() => setEditing(false)} disabled={saving}>Cancel</button>
                     </div>
                 </div>
             ) : (
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
+                <div className="event-detail__header">
                     <div>
                         {config.picture?.$blob && (
-                            <img src={`/blobs/${config.picture.$blob}`} alt=""
-                                style={{ display: 'block', maxWidth: '100%',
-                                    borderRadius: 8, marginBottom: '.75rem' }} />
+                            <img className="event-cover" src={`/blobs/${config.picture.$blob}`} alt="" />
                         )}
-                        <h1 style={{ margin: 0 }}>{config.title || event.id}</h1>
+                        <h1>{config.title || event.id}</h1>
                         {formatWhen(event.startsAt, event.endsAt) && (
-                            <p style={{ ...dim, margin: '.4rem 0 0' }}>
-                                {formatWhen(event.startsAt, event.endsAt)}
-                            </p>
+                            <p className="event-when">{formatWhen(event.startsAt, event.endsAt)}</p>
                         )}
                         {config.location && (
-                            <p style={{ ...dim, margin: '.4rem 0 0' }}>
+                            <p className="event-location">
                                 {safeHref(config.locationHref) ? (
                                     <a href={safeHref(config.locationHref)}
                                         target="_blank" rel="noopener noreferrer">
@@ -517,10 +450,13 @@ function EventDetail({ id }) {
                                 ) : config.location}
                             </p>
                         )}
-                        {config.description && <p style={{ marginTop: '.5rem' }}>{config.description}</p>}
+                        {config.description && (
+                            <p className="event-description">{config.description}</p>
+                        )}
                     </div>
                     {event.access?.admin && (
-                        <button onClick={startEdit} style={iconBtn} title="Edit" aria-label="Edit">
+                        <button className="icon-button" onClick={startEdit}
+                            title="Edit" aria-label="Edit">
                             ✏️
                         </button>
                     )}
@@ -541,7 +477,7 @@ function EventDetail({ id }) {
 
 // The RSVP roster, split by response. "Who's Going" holds the going responses
 // then the maybes (tagged "(maybe going)"); a second tab holds the "Can't go"
-// declines. (No-response invitees aren't shown yet — that's the fuller roster.)
+// declines. (No-response invitees aren't shown here — see User management.)
 function Rsvps({ guests, eventId }) {
     const [tab, setTab] = useState('going'); // 'going' | 'cant'
     const going = guests.filter((g) => g.response === 'going');
@@ -549,22 +485,22 @@ function Rsvps({ guests, eventId }) {
     const notGoing = guests.filter((g) => g.response === 'not-going');
 
     const row = (g, note) => (
-        <li key={g.id} style={{ margin: '.4rem 0' }}>
+        <li key={g.id} className="roster__item">
             <UserLink id={g.id} name={g.name} avatar={g.avatar} event={eventId} />
-            {note ? <span style={dim}> {note}</span> : null}
-            {g.guests?.length ? <span style={dim}> (+{g.guests.length})</span> : null}
+            {note ? <span className="muted">{note}</span> : null}
+            {g.guests?.length ? <span className="muted">(+{g.guests.length})</span> : null}
         </li>
     );
     const tabBtn = (key, text, count) => (
         <button onClick={() => setTab(key)}
-            style={{ ...tabBtnStyle, ...(tab === key ? tabBtnActive : {}) }}>
+            className={`tab${tab === key ? ' tab--active' : ''}`}>
             {text} ({count})
         </button>
     );
 
     return (
-        <div style={{ marginTop: '1.5rem' }}>
-            <div style={{ display: 'flex', gap: '1.25rem', borderBottom: '1px solid #eee' }}>
+        <div>
+            <div className="tabs">
                 {tabBtn('going', "Who's Going", going.length + maybe.length)}
                 {tabBtn('cant', "Can't go", notGoing.length)}
             </div>
@@ -572,7 +508,7 @@ function Rsvps({ guests, eventId }) {
                 going.length + maybe.length === 0 ? (
                     <p>No RSVPs yet.</p>
                 ) : (
-                    <ul>
+                    <ul className="roster">
                         {going.map((g) => row(g))}
                         {maybe.map((g) => row(g, '(maybe going)'))}
                     </ul>
@@ -581,7 +517,7 @@ function Rsvps({ guests, eventId }) {
                 notGoing.length === 0 ? (
                     <p>Nobody has declined.</p>
                 ) : (
-                    <ul>{notGoing.map((g) => row(g))}</ul>
+                    <ul className="roster">{notGoing.map((g) => row(g))}</ul>
                 )
             )}
         </div>
@@ -605,24 +541,24 @@ function EventUsers({ eventId }) {
     };
 
     if (roster === undefined) {
-        return <main style={wrap}><p>Loading…</p></main>;
+        return <main><p>Loading…</p></main>;
     }
     if (roster === null) {
         return (
-            <main style={wrap}>
-                <p><a href={`/events/${eventId}`}>← event</a></p>
+            <main>
+                <p className="back"><a href={`/events/${eventId}`}>← event</a></p>
                 <p>You don't have access to manage this event.</p>
             </main>
         );
     }
     return (
-        <main style={wrap}>
-            <p><a href={`/events/${eventId}`}>← event</a></p>
+        <main>
+            <p className="back"><a href={`/events/${eventId}`}>← event</a></p>
             <h1>User management</h1>
             {roster.length === 0 ? (
                 <p>No one is associated with this event yet.</p>
             ) : (
-                <ul style={{ listStyle: 'none', padding: 0 }}>
+                <ul className="roster">
                     {roster.map((u) => (
                         <RosterRow key={u.id} user={u} eventId={eventId}
                             onRevoke={revoke}
@@ -641,17 +577,17 @@ function RosterRow({ user, eventId, onRevoke, canRevoke }) {
     const [busy, setBusy] = useState(false);
     const status = RSVP_LABELS[user.response] ?? 'No response';
     return (
-        <li style={{ display: 'flex', alignItems: 'center', gap: '.75rem', margin: '.6rem 0' }}>
+        <li className="roster__item">
             <UserLink id={user.id} name={user.name} avatar={user.avatar} event={eventId} />
-            <span style={dim}>
+            <span className="roster__status">
                 {status}{user.guests?.length ? ` (+${user.guests.length})` : ''}
             </span>
             {canRevoke && (
-                <span style={{ marginLeft: 'auto' }}>
+                <span className="roster__actions">
                     {confirming ? (
                         <>
                             <button onClick={async () => { setBusy(true); await onRevoke(user.id); }}
-                                disabled={busy}>Revoke</button>{' '}
+                                disabled={busy}>Revoke</button>
                             <button onClick={() => setConfirming(false)} disabled={busy}>Cancel</button>
                         </>
                     ) : (
@@ -678,25 +614,25 @@ function EventInvites({ eventId }) {
     };
 
     if (invites === undefined) {
-        return <main style={wrap}><p>Loading…</p></main>;
+        return <main><p>Loading…</p></main>;
     }
     if (invites === null) {
         return (
-            <main style={wrap}>
-                <p><a href={`/events/${eventId}`}>← event</a></p>
+            <main>
+                <p className="back"><a href={`/events/${eventId}`}>← event</a></p>
                 <p>You don't have access to manage this event.</p>
             </main>
         );
     }
     return (
-        <main style={wrap}>
-            <p><a href={`/events/${eventId}`}>← event</a></p>
+        <main>
+            <p className="back"><a href={`/events/${eventId}`}>← event</a></p>
             <h1>Open invites</h1>
             {invites.length === 0 ? (
                 <p>No open invites — every link has been redeemed (or none created
                     yet). Create one from the event's Admin actions.</p>
             ) : (
-                <ul style={{ listStyle: 'none', padding: 0 }}>
+                <ul className="roster">
                     {invites.map((inv) => (
                         <InviteRow key={inv.id} invite={inv} onInvalidate={invalidate} />
                     ))}
@@ -714,14 +650,14 @@ function InviteRow({ invite, onInvalidate }) {
     const created = invite.createdAt
         ? new Date(invite.createdAt).toLocaleDateString() : null;
     return (
-        <li style={{ display: 'flex', alignItems: 'center', gap: '.75rem', margin: '.6rem 0' }}>
+        <li className="roster__item">
             <span>{invite.name || 'Unnamed invite'}</span>
-            {created && <span style={dim}>created {created}</span>}
-            <span style={{ marginLeft: 'auto' }}>
+            {created && <span className="muted">created {created}</span>}
+            <span className="roster__actions">
                 {confirming ? (
                     <>
                         <button onClick={async () => { setBusy(true); await onInvalidate(invite.id); }}
-                            disabled={busy}>Invalidate</button>{' '}
+                            disabled={busy}>Invalidate</button>
                         <button onClick={() => setConfirming(false)} disabled={busy}>Cancel</button>
                     </>
                 ) : (
@@ -735,11 +671,9 @@ function InviteRow({ invite, onInvalidate }) {
 function AdminActions({ eventId }) {
     const [inviting, setInviting] = useState(false);
     return (
-        <details style={{ margin: '1.5rem 0' }}>
-            <summary style={{ ...dim, cursor: 'pointer', fontWeight: 600 }}>
-                Admin actions
-            </summary>
-            <div style={{ padding: '.75rem 0', display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+        <details className="admin-actions">
+            <summary>Admin actions</summary>
+            <div className="admin-actions__links">
                 <button onClick={() => setInviting(true)}>Create invite</button>
                 <a href={`/events/${eventId}/users`}>User management</a>
                 <a href={`/events/${eventId}/invites`}>Open invites</a>
@@ -763,19 +697,22 @@ function InviteLinkDialog({ link, title, onClose }) {
         } catch { /* clipboard unavailable — the field is selectable */ }
     };
     return (
-        <div style={overlay} onClick={onClose}>
-            <div style={dialog} onClick={(e) => e.stopPropagation()}>
-                <h2 style={{ marginTop: 0 }}>{title}</h2>
-                <div style={{ display: 'flex', justifyContent: 'center', margin: '1rem 0' }}>
-                    <QRCodeSVG value={link} size={180} includeMargin />
+        <div className="overlay" onClick={onClose}>
+            <div className="dialog" onClick={(e) => e.stopPropagation()}>
+                <h2>{title}</h2>
+                <div className="qr">
+                    {/* fgColor=currentColor + transparent bg hands the QR's colors
+                        to CSS (.qr svg): themeable via --qr-fg/--qr-bg, reactive,
+                        no JS. Only the module *shapes* stay lib-controlled. */}
+                    <QRCodeSVG value={link} size={180} includeMargin
+                        fgColor="currentColor" bgColor="transparent" />
                 </div>
-                <label style={label}>Invite link</label>
-                <div style={{ display: 'flex', gap: '.5rem', margin: '.35rem 0 1rem' }}>
-                    <input style={{ ...input, margin: 0 }} readOnly value={link}
-                        onFocus={(e) => e.target.select()} />
+                <label>Invite link</label>
+                <div className="copy-row">
+                    <input readOnly value={link} onFocus={(e) => e.target.select()} />
                     <button onClick={copy}>{copied ? 'Copied!' : 'Copy'}</button>
                 </div>
-                <div style={{ textAlign: 'right' }}>
+                <div className="actions actions--end">
                     <button onClick={onClose}>Close</button>
                 </div>
             </div>
@@ -813,21 +750,19 @@ function CreateInviteModal({ eventId, onClose }) {
     }
 
     return (
-        <div style={overlay} onClick={onClose}>
-            <div style={dialog} onClick={(e) => e.stopPropagation()}>
-                <div>
-                    <h2 style={{ marginTop: 0 }}>Create invite</h2>
-                    <label style={label}>Name
-                        <input style={input} value={name} autoFocus
-                            disabled={step === 'creating'}
-                            placeholder="Who's this invite for?"
-                            onChange={(e) => setName(e.target.value)}
-                            onKeyDown={(e) => { if (e.key === 'Enter') create(); }} />
-                    </label>
-                    <div style={{ textAlign: 'right' }}>
-                        <button onClick={onClose} disabled={step === 'creating'}>Cancel</button>{' '}
-                        <button onClick={create} disabled={step === 'creating'}>Create</button>
-                    </div>
+        <div className="overlay" onClick={onClose}>
+            <div className="dialog" onClick={(e) => e.stopPropagation()}>
+                <h2>Create invite</h2>
+                <label>Name
+                    <input value={name} autoFocus
+                        disabled={step === 'creating'}
+                        placeholder="Who's this invite for?"
+                        onChange={(e) => setName(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') create(); }} />
+                </label>
+                <div className="actions actions--end">
+                    <button onClick={onClose} disabled={step === 'creating'}>Cancel</button>
+                    <button onClick={create} disabled={step === 'creating'}>Create</button>
                 </div>
             </div>
         </div>
@@ -855,11 +790,11 @@ function ReconnectButton({ accountId }) {
     };
 
     return (
-        <div style={{ margin: '.6rem 0' }}>
+        <div className="reconnect">
             <button onClick={create} disabled={state === 'creating'}>
                 {state === 'creating' ? 'Creating…' : 'New invite link'}
-            </button>
-            {' '}<span style={dim}>Reconnect this person under their existing profile.</span>
+            </button>{' '}
+            <span className="muted">Reconnect this person under their existing profile.</span>
             {state === 'done' && (
                 <InviteLinkDialog title="Reconnect link"
                     link={`${window.location.origin}/invites/?t=${invite.token}`}
@@ -893,8 +828,8 @@ function GrantRow({ label, path, accountId, grants, onChange }) {
         query: `?grant=${encodeURIComponent(path)}`, req: { method: 'DELETE' }
     });
     return (
-        <div style={{ display: 'flex', gap: '.6rem', alignItems: 'center', margin: '.4rem 0' }}>
-            <span style={{ minWidth: 150 }}>
+        <div className="grant-row">
+            <span className="grant-row__label">
                 {label}{known && has ? ' — granted' : ''}
             </span>
             {known ? (
@@ -902,8 +837,8 @@ function GrantRow({ label, path, accountId, grants, onChange }) {
                     ? <button onClick={revoke} disabled={busy}>Revoke</button>
                     : <button onClick={grant} disabled={busy}>Grant</button>
             ) : (
-                <span>
-                    <button onClick={grant} disabled={busy}>Grant</button>{' '}
+                <span className="roster__actions">
+                    <button onClick={grant} disabled={busy}>Grant</button>
                     <button onClick={revoke} disabled={busy}>Revoke</button>
                 </span>
             )}
@@ -911,11 +846,11 @@ function GrantRow({ label, path, accountId, grants, onChange }) {
     );
 }
 
-// Full profile page at /accounts/:accountId. For now just the display name.
+// Full profile page at /accounts/:accountId. Display name + profile picture.
 // Editable only when it's your own account; others see a read-only view (the
-// server hands peers just { id, name }). A ?event=<eventId> renders the page
-// relative to that event, adding the account's RSVP status below the name and
-// (for an admin of that event) an event-admin grant control.
+// server hands peers just { id, name, avatar }). A ?event=<eventId> renders the
+// page relative to that event, adding the account's RSVP status below the name
+// and (for an admin of that event) an event-admin grant control.
 function AccountPage({ accountId }) {
     const [name, setName] = useState('');
     const [avatar, setAvatar] = useState('');        // current pic ref, '' if none
@@ -971,17 +906,15 @@ function AccountPage({ accountId }) {
     }, [eventId, accountId]);
 
     const rsvpLine = eventId && eventRsvp ? (
-        <p style={{ margin: '.35rem 0 1rem', color: '#666' }}>
-            {RSVP_LABELS[eventRsvp.response] ?? 'No Response'}
-        </p>
+        <p className="rsvp-status">{RSVP_LABELS[eventRsvp.response] ?? 'No Response'}</p>
     ) : null;
 
     // Grant affordances: never on your own profile. Full admin needs `**` (i.e.
     // a global admin); event admin needs to admin *this* event.
     const adminControls = !mine && (session.isAdmin || (eventId && eventAdmin)) ? (
-        <div style={{ marginTop: '2rem' }}>
+        <div>
             <hr />
-            <h2 style={dim}>Admin</h2>
+            <h2>Admin</h2>
             {eventId && eventAdmin && (
                 <GrantRow label="Event admin" path={`/events/${eventId}/admin`}
                     accountId={accountId} grants={grants} onChange={loadAccount} />
@@ -1009,8 +942,10 @@ function AccountPage({ accountId }) {
         goBack();
     };
 
+    const avatarObj = avatar ? { $blob: avatar } : null;
+
     return (
-        <main style={wrap}>
+        <main>
             <h1>Profile</h1>
             {state === 'loading' ? (
                 <p>Loading…</p>
@@ -1018,13 +953,13 @@ function AccountPage({ accountId }) {
                 <p>Profile not found.</p>
             ) : mine ? (
                 <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem' }}>
-                        <Avatar name={name} avatar={avatar ? { $blob: avatar } : null} size={72} />
+                    <div className="profile__head">
+                        <Avatar name={name} avatar={avatarObj} size={72} />
                         <div>
                             {uploadPct !== null ? (
-                                <progress value={uploadPct} max={1} style={{ width: '12rem' }} />
+                                <progress value={uploadPct} max={1} />
                             ) : (
-                                <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center' }}>
+                                <div className="file-row">
                                     <input type="file" accept="image/*" onChange={pickImage} />
                                     {avatar && (
                                         <button type="button" onClick={() => setAvatar('')}>Remove</button>
@@ -1033,21 +968,21 @@ function AccountPage({ accountId }) {
                             )}
                         </div>
                     </div>
-                    <label style={label}>Display name
-                        <input style={input} value={name} autoFocus
+                    <label>Display name
+                        <input value={name} autoFocus
                             onChange={(e) => setName(e.target.value)} />
                     </label>
                     {rsvpLine}
-                    <div>
-                        <button onClick={save} disabled={state === 'saving' || uploadPct !== null}>Save</button>{' '}
+                    <div className="actions">
+                        <button onClick={save} disabled={state === 'saving' || uploadPct !== null}>Save</button>
                         <button onClick={goBack} disabled={state === 'saving'}>Cancel</button>
                     </div>
                 </div>
             ) : (
                 <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <Avatar name={name} avatar={avatar ? { $blob: avatar } : null} size={72} />
-                        <p style={{ margin: 0, fontSize: '1.25rem' }}>{name || 'Unnamed'}</p>
+                    <div className="profile__head">
+                        <Avatar name={name} avatar={avatarObj} size={72} />
+                        <p className="profile__name">{name || 'Unnamed'}</p>
                     </div>
                     {rsvpLine}
                     <p><button onClick={goBack}>← Back</button></p>
@@ -1064,12 +999,12 @@ function LogoutModal({ onClose }) {
         window.location.href = '/';
     };
     return (
-        <div style={overlay} onClick={onClose}>
-            <div style={dialog} onClick={(e) => e.stopPropagation()}>
-                <h2 style={{ marginTop: 0 }}>Really log out?</h2>
+        <div className="overlay" onClick={onClose}>
+            <div className="dialog" onClick={(e) => e.stopPropagation()}>
+                <h2>Really log out?</h2>
                 <p>You will need to be re-invited.</p>
-                <div style={{ textAlign: 'right' }}>
-                    <button onClick={onClose}>Cancel</button>{' '}
+                <div className="actions actions--end">
+                    <button onClick={onClose}>Cancel</button>
                     <button onClick={logout}>Log out</button>
                 </div>
             </div>
@@ -1093,19 +1028,18 @@ function ProfileMenu() {
     if (!me) return null; // only offer a profile when signed in
 
     return (
-        <div style={{ position: 'fixed', top: '1rem', right: '1rem', zIndex: 10 }}
-            onClick={(e) => e.stopPropagation()}>
-            <button style={iconBtn} title="Profile" aria-label="Profile"
+        <div className="profile-menu" onClick={(e) => e.stopPropagation()}>
+            <button className="icon-button" title="Profile" aria-label="Profile"
                 aria-haspopup="menu" aria-expanded={open}
                 onClick={() => setOpen((v) => !v)}>
                 👤
             </button>
             {open && (
-                <div style={menu} role="menu">
-                    <a style={menuItem} role="menuitem" href={`/accounts/${me.accountId}`}>
+                <div className="menu" role="menu">
+                    <a className="menu__item" role="menuitem" href={`/accounts/${me.accountId}`}>
                         Edit profile
                     </a>
-                    <button style={menuItem} role="menuitem"
+                    <button className="menu__item" role="menuitem"
                         onClick={() => { setOpen(false); setLoggingOut(true); }}>
                         Log out
                     </button>
@@ -1139,7 +1073,7 @@ function RedeemInvite() {
     }, []);
 
     return (
-        <main style={wrap}>
+        <main>
             <h1>velvet</h1>
             <p>{error ?? 'Signing you in…'}</p>
         </main>
@@ -1151,10 +1085,10 @@ function RedeemInvite() {
 // misleading "not found".
 function NotLoggedIn() {
     return (
-        <main style={wrap}>
+        <main>
             <h1>velvet</h1>
             <p>You are not logged in.</p>
-            <p style={dim}>
+            <p className="muted">
                 Your session may have expired. <a href="/admin">Log in as admin</a>,
                 or open a fresh invite link.
             </p>
@@ -1174,7 +1108,7 @@ function Shell({ path }) {
     }, []);
 
     if (session === undefined) {
-        return <main style={wrap}><p>Loading…</p></main>;
+        return <main><p>Loading…</p></main>;
     }
     if (!session) return <NotLoggedIn />;
 

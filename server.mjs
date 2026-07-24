@@ -1,3 +1,4 @@
+import fs from 'fs';
 import pathLib from 'path';
 import { fileURLToPath } from 'url';
 import Fastify from 'fastify';
@@ -82,6 +83,23 @@ export async function startServer(
     // not registry actions. Cookie-auth + CSRF for writes ride the same guards.
     await registerBlobs(fastify,
             { authenticate, csrfGuard, makeContext: ctxFor, rootPath });
+
+    // Operator theme override: an optional data/theme.css served *after* the
+    // SPA's base theme so an operator reskins the app without a rebuild (see
+    // CLAUDE.md → Frontend → Theming). Empty when absent. Registered
+    // unconditionally so it works in --dev too (Vite proxies /theme.css here);
+    // no-cache so a dropped-in file shows up on the next reload.
+    const themeFile = pathLib.join(rootPath, 'theme.css');
+    fastify.get('/theme.css', { schema: { hide: true } }, async (request, reply) => {
+        reply.type('text/css').header('cache-control', 'no-cache');
+        try {
+            return await fs.promises.readFile(themeFile, 'utf8');
+        }
+        catch (e) {
+            if (e.code === 'ENOENT') return '';   // no operator theme yet
+            throw e;
+        }
+    });
 
     // The built React client (if present), content-negotiated onto the API
     // URLs. In `--dev` the Vite dev server serves the client and proxies here,

@@ -4,6 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>velvet</title>
+    <!-- Operator theme override. Unlayered, so it beats the base theme (which
+         lives in @layer velvet-base) regardless of load order. Served from
+         data/theme.css by the backend; empty when the operator hasn't set one. -->
+    <link rel="stylesheet" href="/theme.css" />
   </head>
   <body>
     <div id="root"></div>

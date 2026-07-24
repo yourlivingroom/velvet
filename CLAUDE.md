@@ -30,7 +30,9 @@ spa.mjs     serve the built React client, content-negotiated onto the API URLs
 dev.mjs     `velvet --dev` supervisor: watched backend + Vite HMR
 server.mjs  REST + OpenAPI(/docs) + MCP + auth + SPA in one Fastify process
 index.mjs   args -> CLI; `--dev` -> dev supervisor; else -> server
-client/     Vite + React SPA (src/App.jsx); built to client/dist (gitignored)
+client/     Vite + React SPA (src/App.jsx + src/styles.css base theme); built
+            to client/dist (gitignored). Operator reskins via data/theme.css
+            (served at /theme.css). See Frontend → Theming.
 ```
 
 **JSON Schema is the shared pivot** — it's the one dialect MCP, OpenAPI, Fastify,
@@ -386,36 +388,59 @@ class hooks**; *all* visual styling lives in **CSS**. An operator reskins the
 entire app by supplying one stylesheet — no rebuild, no JS changes. This is the
 frontend's "one idea": markup describes *structure and meaning*, CSS owns *looks*.
 
+**How it's wired** (built — no longer aspirational):
+- **Base theme** = `client/src/styles.css`, imported in `main.jsx`. *All* its
+  rules live inside **`@layer velvet-base`**.
+- **Operator theme** = `GET /theme.css`, served by the backend (`server.mjs`)
+  from `data/theme.css` (empty `text/css` when absent; `no-cache`). The shell
+  (`client/index.html`) links it in `<head>`. Registered unconditionally so it
+  works in `--dev` too (Vite proxies `/theme.css` to the backend).
+- **Why the layer:** unlayered CSS always beats layered CSS, so the operator's
+  (plain, unlayered) theme overrides **any** base rule **regardless of load order
+  or specificity** — no `!important`, and we don't have to fight Vite's CSS
+  injection order. An operator drops a `data/theme.css` and reskins live.
+
 Rules that keep it true (follow these for all SPA work):
 - **No inline styles, no JS style objects for presentation.** An inline `style`
-  wins the cascade, so a theme can't override it — inline styles are the one thing
-  that breaks reskinnability. (The current `App.jsx` is *all* inline styles/consts
-  like `wrap`/`dim`/`dialog` — that's **legacy being migrated out**; new/edited UI
-  should use classes, and we peel the old inline styles into CSS as we polish.)
-- **Semantic elements first:** `<header>/<nav>/<main>/<section>/<article>`,
-  `<button>`, `<ul>/<li>`, `<form>/<label>`, `<time datetime>`, `<figure>`,
-  ordered headings. Structure is a styling hook and an a11y win.
+  wins the cascade, so a theme can't override it. `App.jsx` is fully migrated to
+  classes; the *only* inline `style` is `--avatar-hue` (a CSS variable, not a
+  look — see below). Keep it that way.
+- **Semantic elements first:** `<main>` is the page container (styled globally),
+  `<button>`, `<ul>/<li>`, `<label>`-wrapping-`<input>`, ordered headings.
 - **Stable, documented class names are an API.** kebab-case, BEM-ish
-  (`.event-detail`, `.guest-list`, `.rsvp-strip__option--active`). Renaming one
-  breaks operator themes — treat like a public interface. State via classes/
-  `aria-*`/`data-*`, never a computed style.
-- **Knobs are CSS custom properties** on `:root` (colors, fonts, spacing, radii).
-  A light reskin overrides variables; a heavy one overrides rules. Ship a **base
-  theme** stylesheet (the default look); the **operator theme loads after it** so
-  it cascades over — planned delivery: the shell links a base stylesheet, then a
-  replaceable `GET /theme.css` served from `data/` (drop-in a file = reskinned;
-  empty when none). *(Not built yet — base stylesheet + `/theme.css` are the next
-  step whenever we start real polish.)*
+  (`.event-detail__header`, `.rsvp__option--active`, `.roster__item`). Renaming
+  one breaks operator themes — treat like a public interface. State via classes/
+  `aria-*`, never a computed style. Existing hooks: `.muted`, `.actions(--end)`,
+  `.list-head`, `.rsvp`/`.rsvp__option(--active)`, `.tabs`/`.tab(--active)`,
+  `.roster`/`.roster__item`/`__status`/`__actions`, `.user-link`, `.avatar(--lg,
+  --placeholder)`, `.overlay`/`.dialog`, `.menu`/`.menu__item`, `.profile-menu`,
+  `.admin-actions`, `.grant-row`, `.profile__head`, `.event-cover`/`-when`/
+  `-location`, `.icon-button`.
+- **Knobs are CSS custom properties** on `:root` in `styles.css` (`--fg`,
+  `--fg-muted`, `--bg`, `--surface`, `--border(-strong)`, `--accent`/`--accent-fg`,
+  `--radius(-sm)`, `--shadow(-sm)`, `--overlay`, `--page-width`). A light reskin
+  overrides variables; a heavy one overrides rules. A `prefers-color-scheme: dark`
+  block flips the variables (operators can override that too).
 - **When a value must come from data, hand it to CSS — don't compute the look in
-  JS.** e.g. the avatar's `hsl(hashHue(name))` is currently an inline computed
-  color; the reskinnable form is a `data-hue`/CSS-var the stylesheet consumes, so
-  a theme can restyle avatars.
+  JS.** The avatar color is the reference: JS sets `style={{ '--avatar-hue': N }}`
+  and CSS does `background: hsl(var(--avatar-hue) 55% 45%)`, so a theme restyles
+  avatars freely. That's the sanctioned form of an inline `style` — a data hook,
+  not a look.
 
 **Pushback posture:** if a request would bake a visual decision into JS or markup
 in a way CSS can't override (data-driven inline styles, canvas/SVG with hardcoded
 colors, layout decided in JS, pixel dimensions in markup, presentational content,
 third-party widgets that inject their own inline/shadow styles), flag it and offer
-the CSS-reskinnable version instead.
+the CSS-reskinnable version instead. Exceptions are allowed — just surface them
+for a call, don't decide silently. The `qrcode.react` **QR code**
+(`InviteLinkDialog`) was one, now largely reclaimed: it's rendered
+`fgColor="currentColor" bgColor="transparent"`, so `.qr svg { color: var(--qr-fg);
+background: var(--qr-bg) }` drives its colors + quiet-zone from CSS, reactively.
+Only the module **shapes** stay lib-controlled (that's the residual exception).
+`--qr-fg`/`--qr-bg` default dark-on-light and are *not* flipped in dark mode — QR
+needs high contrast to scan. (General trick for a widget that takes a color prop:
+pass `currentColor` and let CSS's `color` cascade in, rather than reading a CSS
+var in JS — the JS read is a one-time snapshot that won't react to theme changes.)
 
 ### Serving & routing
 

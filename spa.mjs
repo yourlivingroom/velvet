@@ -15,7 +15,8 @@ import fastifyStatic from '@fastify/static';
 // Paths that are the server's own surface — never the SPA. `/admin` is the
 // standalone bootstrap-login helper page, not a client route.
 const NON_SPA = [/^\/mcp/, /^\/oauth/, /^\/bootstrap/, /^\/\.well-known/,
-        /^\/docs/, /^\/assets/, /^\/admin(?:\/|$)/, /^\/blobs(?:\/|$)/];
+        /^\/docs/, /^\/assets/, /^\/admin(?:\/|$)/, /^\/blobs(?:\/|$)/,
+        /^\/theme\.css$/];
 
 export async function registerSpa(fastify, { clientDist }) {
     const indexPath = pathLib.join(clientDist, 'index.html');

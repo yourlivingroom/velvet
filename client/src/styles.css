@@ -1,0 +1,192 @@
+/* velvet — base theme (the default look).
+ *
+ * EVERYTHING here lives in the `velvet-base` cascade layer. Unlayered CSS always
+ * beats layered CSS, so an operator's /theme.css (plain, unlayered) overrides ANY
+ * of this — regardless of source order or selector specificity, no !important
+ * needed. Reskin by overriding the CSS variables below (light touch) or whole
+ * rules (heavy). See CLAUDE.md → Frontend → Theming.
+ *
+ * The SPA renders semantic HTML with stable class names; those class names are a
+ * public API for themes — treat renames as breaking. */
+@layer velvet-base {
+    :root {
+        --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        --fg: #1c1e21;
+        --fg-muted: #656a70;
+        --bg: #f6f7f9;
+        --surface: #ffffff;
+        --border: #e3e6ea;
+        --border-strong: #cdd2d8;
+        --accent: #2563eb;
+        --accent-fg: #ffffff;
+        --radius: 10px;
+        --radius-sm: 6px;
+        --shadow: 0 10px 34px rgba(0, 0, 0, .18);
+        --shadow-sm: 0 4px 16px rgba(0, 0, 0, .10);
+        --overlay: rgba(0, 0, 0, .4);
+        --page-width: 640px;
+        /* QR modules/tile (see .qr svg). Kept dark-on-light and NOT flipped in
+           dark mode — QR codes need high contrast dark-on-light to scan. */
+        --qr-fg: #111827;
+        --qr-bg: #ffffff;
+    }
+
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --fg: #e6e8eb;
+            --fg-muted: #9aa1a9;
+            --bg: #15171b;
+            --surface: #1e2126;
+            --border: #2c3037;
+            --border-strong: #3a3f47;
+            --accent: #5b8cff;
+            --accent-fg: #0b0d10;
+            --shadow: 0 10px 34px rgba(0, 0, 0, .5);
+            --shadow-sm: 0 4px 16px rgba(0, 0, 0, .4);
+            --overlay: rgba(0, 0, 0, .6);
+        }
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+        margin: 0;
+        font: 16px/1.5 var(--font);
+        color: var(--fg);
+        background: var(--bg);
+    }
+
+    /* Every page is a <main> — it doubles as the centered container. */
+    main { max-width: var(--page-width); margin: 3rem auto; padding: 0 1rem; }
+
+    h1 { font-size: 1.6rem; margin: 0 0 .5rem; }
+    h2 { font-size: 1.15rem; margin: 1.5rem 0 .5rem; }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    p { margin: .5rem 0; }
+    hr { border: none; border-top: 1px solid var(--border); margin: 1.5rem 0; }
+
+    ul { padding-left: 1.25rem; margin: .5rem 0; }
+    li { margin: .35rem 0; }
+
+    button {
+        font: inherit;
+        color: var(--fg);
+        background: var(--surface);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius-sm);
+        padding: .45rem .9rem;
+        cursor: pointer;
+    }
+    button:hover:not(:disabled) { border-color: var(--accent); }
+    button:disabled { opacity: .55; cursor: default; }
+
+    input, textarea {
+        font: inherit;
+        color: var(--fg);
+        background: var(--surface);
+        width: 100%;
+        padding: .5rem;
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius-sm);
+    }
+    input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+    input[type="file"] { border: none; background: none; padding: 0; }
+    textarea { min-height: 5rem; resize: vertical; }
+
+    label { display: block; color: var(--fg-muted); font-size: .9rem; margin-bottom: 1rem; }
+    label input, label textarea { margin-top: .35rem; }
+
+    progress { width: 100%; }
+
+    .muted { color: var(--fg-muted); }
+
+    /* button rows */
+    .actions { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .5rem; }
+    .actions--end { justify-content: flex-end; }
+
+    /* events list */
+    .list-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+    .list-head h2 { margin: 0; }
+    .event-list__time { color: var(--fg-muted); margin-left: .5rem; }
+    .list-nav { margin-top: 1.5rem; }
+    .back { margin: 0 0 1rem; }
+
+    /* icon-only affordances (emoji) */
+    .icon-button { border: none; background: none; padding: .25rem; font-size: 1.3rem; line-height: 1; }
+
+    /* event detail */
+    .event-detail__header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+    .event-cover { display: block; max-width: 100%; border-radius: var(--radius); margin-bottom: .75rem; }
+    .event-when, .event-location { color: var(--fg-muted); margin: .4rem 0 0; }
+    .event-description { margin-top: .5rem; }
+    .cover-edit { margin: .35rem 0 1rem; }
+    .cover-preview { display: block; max-width: 100%; border-radius: var(--radius-sm); margin-bottom: .5rem; }
+    .file-row { display: flex; gap: .5rem; align-items: center; }
+
+    /* RSVP segmented control */
+    .rsvp { display: inline-flex; margin: 1.25rem 0; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); overflow: hidden; }
+    .rsvp__option { border: none; border-radius: 0; background: var(--surface); padding: .5rem 1.1rem; }
+    .rsvp__option + .rsvp__option { border-left: 1px solid var(--border-strong); }
+    .rsvp__option:hover:not(:disabled) { background: var(--bg); }
+    .rsvp__option--active, .rsvp__option--active:hover:not(:disabled) { background: var(--accent); color: var(--accent-fg); }
+
+    /* tabs */
+    .tabs { display: flex; gap: 1.25rem; border-bottom: 1px solid var(--border); margin-top: 1.5rem; }
+    .tab { border: none; border-radius: 0; background: none; padding: .5rem 0; margin-bottom: -1px; color: var(--fg-muted); border-bottom: 2px solid transparent; }
+    .tab:hover:not(:disabled) { border-bottom: 2px solid var(--border-strong); }
+    .tab--active, .tab--active:hover { color: var(--fg); font-weight: 600; border-bottom: 2px solid var(--accent); }
+
+    /* people / invite rosters */
+    .roster { list-style: none; padding: 0; }
+    .roster__item { display: flex; align-items: center; gap: .75rem; margin: .6rem 0; }
+    .roster__status { color: var(--fg-muted); }
+    .roster__actions { margin-left: auto; display: flex; gap: .5rem; }
+
+    /* avatar + user link */
+    .user-link { display: inline-flex; align-items: center; gap: .45rem; color: inherit; }
+    .user-link:hover { text-decoration: none; }
+    .user-link:hover .user-link__name { text-decoration: underline; }
+    .avatar { width: 24px; height: 24px; border-radius: 50%; flex: 0 0 auto; object-fit: cover; display: inline-block; }
+    .avatar--lg { width: 72px; height: 72px; }
+    .avatar--placeholder {
+        display: inline-flex; align-items: center; justify-content: center;
+        background: hsl(var(--avatar-hue, 210) 55% 45%);
+        color: #fff; font-weight: 600; font-size: 12px; line-height: 1; user-select: none;
+    }
+    .avatar--lg.avatar--placeholder { font-size: 34px; }
+
+    /* overlay + dialog */
+    .overlay { position: fixed; inset: 0; background: var(--overlay); display: flex; align-items: center; justify-content: center; padding: 1rem; z-index: 20; }
+    .dialog { background: var(--surface); border-radius: var(--radius); padding: 1.5rem; width: min(90vw, 360px); box-shadow: var(--shadow); }
+    .dialog h2 { margin-top: 0; }
+    .qr { display: flex; justify-content: center; margin: 1rem 0; }
+    /* The QR SVG draws its modules with currentColor; the transparent bits (light
+       squares + quiet zone) show the svg background. So CSS fully controls it. */
+    .qr svg { color: var(--qr-fg); background: var(--qr-bg); border-radius: var(--radius-sm); }
+    .copy-row { display: flex; gap: .5rem; margin: .35rem 0 1rem; }
+    .copy-row input { margin: 0; }
+
+    /* profile menu */
+    .profile-menu { position: fixed; top: 1rem; right: 1rem; z-index: 10; }
+    .menu { position: absolute; top: 100%; right: 0; margin-top: .35rem; min-width: 150px; overflow: hidden; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--shadow-sm); }
+    .menu__item { display: block; width: 100%; text-align: left; border: none; border-radius: 0; background: none; padding: .6rem .9rem; color: inherit; text-decoration: none; cursor: pointer; }
+    .menu__item:hover { background: var(--bg); text-decoration: none; }
+
+    /* admin actions */
+    .admin-actions { margin: 1.5rem 0; }
+    .admin-actions > summary { color: var(--fg-muted); font-weight: 600; cursor: pointer; }
+    .admin-actions__links { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; padding: .75rem 0; }
+
+    /* grants / reconnect */
+    .grant-row { display: flex; gap: .6rem; align-items: center; margin: .4rem 0; }
+    .grant-row__label { min-width: 150px; }
+    .reconnect { margin: .6rem 0; }
+
+    /* profile page */
+    .profile__head { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; }
+    .profile__name { margin: 0; font-size: 1.25rem; }
+    .rsvp-status { color: var(--fg-muted); margin: .35rem 0 1rem; }
+}
