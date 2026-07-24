@@ -19,6 +19,25 @@ const INVITE_INDEXES = {
     }
 };
 
+// Index events by each participating account, ordered by time. An event's
+// `members` are the accounts invited to or administrating it (denormalized from
+// their grants — see addEventMember/eventIdFromGrant; global `**` admins aren't
+// enumerated and reach events via the scan path in events.list). The composite
+// key `[accountId, startsAt, endsAt]` is stored with charwise, whose ordering
+// puts null (an untimed event) before any ISO string and sorts ISO strings
+// chronologically — exactly "no time" first, then by start, then end. So
+// `byUser.getMany([accountId])` streams that account's events already ordered.
+const EVENT_INDEXES = {
+    byUser: {
+        process(fileContent, emit) {
+            const e = JSON.parse(fileContent);
+            for (const uid of e.members ?? []) {
+                emit([uid, e.startsAt ?? null, e.endsAt ?? null], e.id);
+            }
+        }
+    }
+};
+
 // The single source of truth for what velvet can do.
 //
 // Each action is a self-describing descriptor:
@@ -54,7 +73,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
         inline
     });
 
-    const events = pulpDb({}, {
+    const events = pulpDb(EVENT_INDEXES, {
         dataPath: `${rootPath}/events`,
         indexPath: `${rootPath}/indexes/events`,
         inline
@@ -172,6 +191,66 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
         return { acctId, key: `${eventId}~${acctId}` };
     }
 
+    // --- event membership (denormalized, to feed the byUser index) ----------
+    // A "member" of an event is an account invited to or administrating it. That
+    // relationship really lives in the account's grants; we mirror the account
+    // ids onto `event.members` so the events collection can be indexed by user
+    // (an index's process() sees only the event doc, never accounts). awaitIndex
+    // so a just-granted event shows up in the grantee's next listing.
+    async function addEventMember(eventId, accountId) {
+        await events.edit(`${eventId}.json`, (draft) => {
+            if (!draft) return;   // no such event (e.g. deleted) — nothing to do
+            const cur = draft.members ?? [];
+            if (!cur.includes(accountId)) draft.members = [...cur, accountId];
+        }, { awaitIndex: true });
+    }
+    async function removeEventMember(eventId, accountId) {
+        await events.edit(`${eventId}.json`, (draft) => {
+            if (!draft?.members) return;
+            draft.members = draft.members.filter((m) => m !== accountId);
+        }, { awaitIndex: true });
+    }
+
+    // The events a non-global caller participates in, via the byUser index —
+    // already ordered by (startsAt, endsAt) with untimed events first (see
+    // EVENT_INDEXES). Returns the full event docs.
+    async function eventsForUser(accountId) {
+        const out = [];
+        const seen = new Set();
+        for await (const match of events.indexes.byUser.getMany([accountId])) {
+            const id = match.indexValue;
+            if (seen.has(id)) continue;
+            seen.add(id);
+            const doc = await eventCol.getDoc(id);
+            if (doc) out.push(doc);
+        }
+        return out;
+    }
+
+    // One-time (idempotent) backfill: rebuild every event's `members` from the
+    // accounts' current grants, so events created before this index existed still
+    // appear in their participants' lists. Run at server boot.
+    async function backfillEventMembers() {
+        const accts = await accountCol.listDocs();
+        const byEvent = new Map();
+        for (const a of accts) {
+            for (const g of a.grants ?? []) {
+                const eid = eventIdFromGrant(g);
+                if (!eid) continue;
+                if (!byEvent.has(eid)) byEvent.set(eid, new Set());
+                byEvent.get(eid).add(a.id);
+            }
+        }
+        for (const [eid, ids] of byEvent) {
+            await events.edit(`${eid}.json`, (draft) => {
+                if (!draft) return;
+                const cur = new Set(draft.members ?? []);
+                const merged = new Set([...cur, ...ids]);
+                if (merged.size !== cur.size) draft.members = [...merged];
+            });
+        }
+    }
+
     // Synthesize the guest list (RSVPs) for events, grouped by event id, in one
     // scan of the reservations (+ one of accounts, for names). Used to fold
     // "who's coming" into event reads.
@@ -241,6 +320,12 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                 grants: inviteGrants,   // what this account is permitted to do
                 name: inviteName        // seed the display name (editable later)
             }));
+            // Mirror the conferred event grants onto those events' member lists
+            // (feeds the byUser index), one entry per distinct event.
+            for (const eid of new Set(
+                    inviteGrants.map(eventIdFromGrant).filter(Boolean))) {
+                await addEventMember(eid, newAccountId);
+            }
         }
         return { accountId: boundId, entrypoint };
     }
@@ -406,8 +491,11 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
             },
             // startsAt/endsAt are *operative* top-level fields (see events.update),
             // distinct from the user's free-form `config`. They start null.
+            // `members` (denormalized participants for the byUser index) starts
+            // empty — the creator is a global admin, who reaches events via scan.
             handler: ({ config }) => eventCol.createDoc(
-                    { config: config ?? {}, startsAt: null, endsAt: null })
+                    { config: config ?? {}, startsAt: null, endsAt: null,
+                        members: [] })
         },
 
         'events.get': {
@@ -438,21 +526,35 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
         },
 
         'events.list': {
-            summary: 'List events you can see (all of them, for admins).',
+            summary: 'List events you can see, ordered by time (all, for admins).',
+            description: 'Your "my events": the events you participate in, ordered '
+                    + 'by start then end, with untimed events first. Backed by the '
+                    + 'byUser index for a scoped caller; a global admin (who can '
+                    + 'see every event) is served by a full scan. Each event is '
+                    + 'graded like the single GET; events you have no permission on '
+                    + 'are simply omitted (not 404 — they are not "yours").',
             http: { method: 'GET', path: '/events' },
             input: { type: 'object', additionalProperties: false, properties: {} },
-            // Each event graded like the single get; events you have no
-            // permission on are simply omitted (not 404 — they're not "yours").
             handler: async (_input, ctx) => {
-                const [events, lists] = await Promise.all([
-                    eventCol.listDocs(), guestListsByEvent()
+                // Global admins (`**` / wildcard) aren't enumerated in any
+                // event's members, so they scan; everyone else queries the index
+                // by their account id (already time-ordered).
+                const source = seesAllEvents(ctx)
+                        ? eventCol.listDocs()
+                        : (ctx.auth?.sub ? eventsForUser(ctx.auth.sub) : []);
+                const [candidates, lists] = await Promise.all([
+                    source, guestListsByEvent()
                 ]);
                 const out = [];
-                for (const e of events) {
+                for (const e of candidates) {
                     const access = eventAccess(e.id, ctx);
                     if (!access.participant) continue;
                     out.push(projectEvent(e, lists.get(e.id) ?? [], access));
                 }
+                // Sort in-handler too, so ordering holds whether the index was
+                // live (already ordered) or inline (unordered scan): untimed
+                // first, then by start, then end.
+                out.sort(byStartThenEnd);
                 return out;
             }
         },
@@ -713,6 +815,9 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                                 draft.grants = [...(draft.grants ?? []), grant];
                             }
                         });
+                // Keep the event's member list (byUser index) in step.
+                const eid = eventIdFromGrant(grant);
+                if (eid) await addEventMember(eid, accountId);
                 return ownAccountOrAdmin(accountId, ctx)
                         ? newValue : { id: newValue.id, name: newValue.name };
             }
@@ -747,6 +852,13 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                             draft.grants = (draft.grants ?? [])
                                     .filter((g) => g !== grant);
                         });
+                // Drop event membership only if no other grant still ties this
+                // account to the event (it may hold /view and /join separately).
+                const eid = eventIdFromGrant(grant);
+                if (eid && !(newValue.grants ?? [])
+                        .some((g) => eventIdFromGrant(g) === eid)) {
+                    await removeEventMember(eid, accountId);
+                }
                 return ownAccountOrAdmin(accountId, ctx)
                         ? newValue : { id: newValue.id, name: newValue.name };
             }
@@ -903,6 +1015,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
         actions,
         redeemInvite,
         makeContext,
+        backfillEventMembers,
         async close() {
             await invites.close();
             await sessions.close();
@@ -925,6 +1038,36 @@ function stripUndefined(obj) {
 // The secret token is shown once, in the create response; reads omit it.
 function withoutToken({ token, ...rest }) {
     return rest;
+}
+
+// The concrete event id a grant confers access to, or null. Only literal
+// `/events/<evt_…>/…` grants map to a member entry; wildcard/`**` holders aren't
+// enumerated per-event (they're handled by the scan path — see seesAllEvents).
+function eventIdFromGrant(grant) {
+    const m = /^\/events\/(evt_[0-9a-f]+)(?:\/|$)/.exec(grant ?? '');
+    return m ? m[1] : null;
+}
+
+// Does this caller effectively see *every* event (a `**` or `/events/*` holder)?
+// Probe with an id that is not a real event: only a wildcard grant can match it.
+// Such callers aren't in any event's `members`, so events.list scans for them.
+function seesAllEvents(ctx) {
+    return ctx.can('/events/__any__/admin')
+            || ctx.can('/events/__any__/view')
+            || ctx.can('/events/__any__/join');
+}
+
+// Order events for a listing: untimed (null) first, then by start, then end.
+// ISO date-time strings compare lexicographically = chronologically.
+function cmpTimeNullFirst(a, b) {
+    if (a == null && b == null) return 0;
+    if (a == null) return -1;
+    if (b == null) return 1;
+    return a < b ? -1 : a > b ? 1 : 0;
+}
+function byStartThenEnd(a, b) {
+    return cmpTimeNullFirst(a.startsAt, b.startsAt)
+            || cmpTimeNullFirst(a.endsAt, b.endsAt);
 }
 
 // How a caller may see an event: `admin` (full doc) if they hold its /admin

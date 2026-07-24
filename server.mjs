@@ -16,10 +16,11 @@ import { registerSpa } from './spa.mjs';
 //   - OpenAPI + docs UI  (@fastify/swagger, derived from those routes)
 //   - MCP endpoint       (registerMcp), guarded by JWT validation
 //   - Auth: RS + bootstrap issuer (registerAuth)
-export async function startServer({ actions, close, redeemInvite, makeContext }, {
-    port = 3000,
-    rootPath = 'data'
-} = {}) {
+export async function startServer(
+    { actions, close, redeemInvite, makeContext, backfillEventMembers }, {
+        port = 3000,
+        rootPath = 'data'
+    } = {}) {
     const fastify = Fastify({ logger: true });
 
     // Shared URLs are content-negotiated on `Accept` — the SPA shell and the
@@ -91,6 +92,11 @@ export async function startServer({ actions, close, redeemInvite, makeContext },
                 pathLib.dirname(fileURLToPath(import.meta.url)), 'client', 'dist');
         await registerSpa(fastify, { clientDist });
     }
+
+    // One-time reconciliation: rebuild event.members from account grants so
+    // events predating the byUser index still list for their participants.
+    // Idempotent, so it's safe to run every boot.
+    if (backfillEventMembers) await backfillEventMembers();
 
     fastify.addHook('onClose', async () => {
         await close();

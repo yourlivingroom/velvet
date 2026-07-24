@@ -95,7 +95,16 @@ one both positionally *and* by flag is an error. No other file needs editing.
   block (`{ admin, join }`) so a client offers only the actions the viewer may
   take (e.g. the SPA's RSVP strip appears iff `access.join`). `GET /events` (`events.list`) is
   **"my events"** — no admin gate; it returns only the events you participate in
-  (via `/view`/`/join`/`/admin`), each graded the same way (admins get all).
+  (via `/view`/`/join`/`/admin`), each graded the same way (admins get all),
+  **ordered by time** (untimed events first, then by start, then end). It's
+  backed by the **`byUser` index** (see Dogfooding): each event carries a
+  denormalized `members` list — the account ids invited to or administrating it,
+  mirrored from their grants by `addEventMember`/`eventIdFromGrant` on
+  invite-redeem and `accounts.grant`/`revoke` (and reconciled at boot by
+  `backfillEventMembers`). A scoped caller queries `byUser.getMany([sub])`
+  (already time-ordered); a global `**` admin isn't enumerated in any `members`,
+  so `seesAllEvents(ctx)` routes them through a full scan instead. The handler
+  re-sorts regardless, so ordering holds under the inline (CLI) index too.
   `eventAccess()` + `projectEvent()` are shared by both so an event appears in
   your list exactly when you could open it, and looks identical either way. Both
   synthesize a **`guestList`** from reservations (one scan grouped by event) —
@@ -468,10 +477,20 @@ set into focus, and will version them once it settles. No need to flag this.
   query scans the collection and runs `process` in memory. No LevelDB, no
   watcher, no lock.
 
-Same query API either way (`store.indexes.<name>.get(key)`). velvet runs the
-**server live** and the **CLI inline**, so a one-shot CLI shares a `data/` dir
-with a live server without fighting for the lock. `invites` carries a `byToken`
-index; redemption uses it.
+Same query API either way (`store.indexes.<name>.get(key)` /
+`getMany(prefixKey)`). velvet runs the **server live** and the **CLI inline**, so
+a one-shot CLI shares a `data/` dir with a live server without fighting for the
+lock. `invites` carries a `byToken` index; redemption uses it.
+
+**Composite keys are ordered (charwise).** `events` carries a **`byUser`** index
+emitting `[accountId, startsAt, endsAt] → id` per member. Keys are stored with
+`charwise`, whose byte-ordering puts `null` before any string and sorts ISO
+date-times chronologically — so `byUser.getMany([accountId])` (a prefix query:
+cardcatalog ranges `[key, KEY_BOTTOM]..[key, KEY_TOP]`) streams that account's
+events **already ordered** untimed-first-then-chronological, no sort needed live.
+This is what backs "my events" (see Domain). Note the **inline** path
+(`inlineCatalogs`) filters by prefix but does *not* sort — so a consumer that
+needs order under inline (the CLI) must sort too; `events.list` does.
 
 **Strong-consistency escape hatch:** `store.edit(path, updater, { awaitIndex:
 true })` blocks until the live index reflects the write (the writer drives
