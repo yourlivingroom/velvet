@@ -379,6 +379,46 @@ docs UI at `/docs`.
 
 ## Frontend (SPA)
 
+### Theming — React emits semantic HTML, CSS does all the skinning
+
+**The strategy:** React renders **semantic, presentation-free HTML** with **stable
+class hooks**; *all* visual styling lives in **CSS**. An operator reskins the
+entire app by supplying one stylesheet — no rebuild, no JS changes. This is the
+frontend's "one idea": markup describes *structure and meaning*, CSS owns *looks*.
+
+Rules that keep it true (follow these for all SPA work):
+- **No inline styles, no JS style objects for presentation.** An inline `style`
+  wins the cascade, so a theme can't override it — inline styles are the one thing
+  that breaks reskinnability. (The current `App.jsx` is *all* inline styles/consts
+  like `wrap`/`dim`/`dialog` — that's **legacy being migrated out**; new/edited UI
+  should use classes, and we peel the old inline styles into CSS as we polish.)
+- **Semantic elements first:** `<header>/<nav>/<main>/<section>/<article>`,
+  `<button>`, `<ul>/<li>`, `<form>/<label>`, `<time datetime>`, `<figure>`,
+  ordered headings. Structure is a styling hook and an a11y win.
+- **Stable, documented class names are an API.** kebab-case, BEM-ish
+  (`.event-detail`, `.guest-list`, `.rsvp-strip__option--active`). Renaming one
+  breaks operator themes — treat like a public interface. State via classes/
+  `aria-*`/`data-*`, never a computed style.
+- **Knobs are CSS custom properties** on `:root` (colors, fonts, spacing, radii).
+  A light reskin overrides variables; a heavy one overrides rules. Ship a **base
+  theme** stylesheet (the default look); the **operator theme loads after it** so
+  it cascades over — planned delivery: the shell links a base stylesheet, then a
+  replaceable `GET /theme.css` served from `data/` (drop-in a file = reskinned;
+  empty when none). *(Not built yet — base stylesheet + `/theme.css` are the next
+  step whenever we start real polish.)*
+- **When a value must come from data, hand it to CSS — don't compute the look in
+  JS.** e.g. the avatar's `hsl(hashHue(name))` is currently an inline computed
+  color; the reskinnable form is a `data-hue`/CSS-var the stylesheet consumes, so
+  a theme can restyle avatars.
+
+**Pushback posture:** if a request would bake a visual decision into JS or markup
+in a way CSS can't override (data-driven inline styles, canvas/SVG with hardcoded
+colors, layout decided in JS, pixel dimensions in markup, presentational content,
+third-party widgets that inject their own inline/shadow styles), flag it and offer
+the CSS-reskinnable version instead.
+
+### Serving & routing
+
 `client/` is a Vite + React SPA, built to `client/dist` (gitignored; `npm run
 build:client`). `spa.mjs` serves it **content-negotiated on the same URLs as the
 API** (a 5th door): a browser navigation (`Accept: text/html`) to a non-server
