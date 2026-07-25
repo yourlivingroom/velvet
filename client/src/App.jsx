@@ -217,6 +217,11 @@ function toLocalInput(iso) {
 // new Date(local).toISOString() anchors it to the viewer's timezone.
 const localInputToIso = (v) => (v ? new Date(v).toISOString() : null);
 
+// Parse a "guest slots" field: blank → the `empty` sentinel (undefined on create
+// = "unset/unlimited", null on update = "clear to unlimited"); else an int ≥ 0.
+const parseSlots = (v, empty) =>
+    String(v).trim() === '' ? empty : Math.max(0, parseInt(v, 10) || 0);
+
 // Only surface a config-supplied URL as a link if it's a safe scheme — config is
 // set by event admins but rendered to invitees, so a `javascript:`/`data:` href
 // would be stored XSS. Returns the url when safe, else null (render as plain text).
@@ -264,10 +269,12 @@ const UserPlusIcon = () => (
 // that opens an inline editor (text box + Save + Remove). `current` is the
 // viewer's response; `guests` their saved guest names — preserved across a
 // response flip, and the whole reservation is re-PUT on any guest edit.
-function RsvpStrip({ eventId, current, guests, onDone }) {
+function RsvpStrip({ eventId, current, guests, allowance, onDone }) {
     const [saving, setSaving] = useState(false);
     const [editIdx, setEditIdx] = useState(null);   // null | index | 'new'
     const [editValue, setEditValue] = useState('');
+    // allowance null = unlimited; a number caps how many guests you may bring.
+    const atLimit = allowance != null && guests.length >= allowance;
 
     const put = async (response, nextGuests) => {
         setSaving(true);
@@ -351,11 +358,22 @@ function RsvpStrip({ eventId, current, guests, onDone }) {
                             <li className="guest">{editRow('new')}</li>
                         )}
                     </ul>
-                    <button className="subtle" onClick={() => startEdit('new', '')}
-                        disabled={saving || editIdx === 'new'}>
-                        <UserPlusIcon />
-                        Add guest
-                    </button>
+                    {!atLimit && editIdx !== 'new' && (
+                        <button className="subtle" onClick={() => startEdit('new', '')}
+                            disabled={saving}>
+                            <UserPlusIcon />
+                            Add guest
+                        </button>
+                    )}
+                    <p className="muted guests__limit">
+                        {allowance == null
+                            ? 'You are welcome to bring guests!'
+                            : allowance === 0
+                                ? 'Unfortunately, no +1s are allowed.'
+                                : allowance === 1
+                                    ? 'You are welcome to bring a guest!'
+                                    : `You are welcome to bring up to ${allowance} guests!`}
+                    </p>
                 </div>
             )}
         </div>
@@ -601,7 +619,8 @@ function EventDetail({ id }) {
 
             {event.access?.join && (
                 <RsvpStrip eventId={id} current={mine?.response}
-                    guests={mine?.guests ?? []} onDone={load} />
+                    guests={mine?.guests ?? []}
+                    allowance={event.access?.guestAllowance} onDone={load} />
             )}
 
             {event.access?.admin && <AdminActions eventId={id} />}
@@ -751,6 +770,14 @@ function EventInvites({ eventId }) {
         await api(`/events/${eventId}/invites/${inviteId}`, { method: 'DELETE' });
         await load();
     };
+    const update = async (inviteId, patch) => {
+        await api(`/events/${eventId}/invites/${inviteId}`, {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(patch)
+        });
+        await load();
+    };
 
     if (invites === undefined) {
         return <main><p>Loading…</p></main>;
@@ -773,7 +800,8 @@ function EventInvites({ eventId }) {
             ) : (
                 <ul className="roster">
                     {invites.map((inv) => (
-                        <InviteRow key={inv.id} invite={inv} onInvalidate={invalidate} />
+                        <InviteRow key={inv.id} invite={inv}
+                            onInvalidate={invalidate} onUpdate={update} />
                     ))}
                 </ul>
             )}
@@ -781,26 +809,65 @@ function EventInvites({ eventId }) {
     );
 }
 
-// One open-invite row: its name + when it was created, with a two-click
-// Invalidate (deletes the invite so its link stops working).
-function InviteRow({ invite, onInvalidate }) {
+// One open-invite row: name + guest allowance + created date, with Edit (name +
+// guest slots) and a two-click Invalidate (deletes the invite so its link dies).
+function InviteRow({ invite, onInvalidate, onUpdate }) {
+    const [editing, setEditing] = useState(false);
+    const [name, setName] = useState('');
+    const [slots, setSlots] = useState('');
     const [confirming, setConfirming] = useState(false);
     const [busy, setBusy] = useState(false);
     const created = invite.createdAt
         ? new Date(invite.createdAt).toLocaleDateString() : null;
+    const allowanceLabel = invite.guestAllowance == null
+        ? 'unlimited guests'
+        : `${invite.guestAllowance} guest${invite.guestAllowance === 1 ? '' : 's'}`;
+
+    const startEdit = () => {
+        setName(invite.name ?? '');
+        setSlots(invite.guestAllowance ?? '');
+        setEditing(true);
+    };
+    const save = async () => {
+        setBusy(true);
+        await onUpdate(invite.id, { name, guestAllowance: parseSlots(slots, null) });
+        setBusy(false);
+        setEditing(false);
+    };
+
+    if (editing) {
+        return (
+            <li className="roster__item invite-edit">
+                <input aria-label="Invite name" value={name} placeholder="Name"
+                    onChange={(e) => setName(e.target.value)} />
+                <input aria-label="Guest slots" type="number" min="0" value={slots}
+                    placeholder="unlimited" onChange={(e) => setSlots(e.target.value)} />
+                <span className="roster__actions">
+                    <button className="primary" onClick={save} disabled={busy}>Save</button>
+                    <button onClick={() => setEditing(false)} disabled={busy}>Cancel</button>
+                </span>
+            </li>
+        );
+    }
     return (
         <li className="roster__item">
             <span>{invite.name || 'Unnamed invite'}</span>
-            {created && <span className="muted">created {created}</span>}
+            <span className="muted">
+                {allowanceLabel}{created ? ` · created ${created}` : ''}
+            </span>
             <span className="roster__actions">
                 {confirming ? (
                     <>
-                        <button onClick={async () => { setBusy(true); await onInvalidate(invite.id); }}
+                        <button className="danger"
+                            onClick={async () => { setBusy(true); await onInvalidate(invite.id); }}
                             disabled={busy}>Invalidate</button>
                         <button onClick={() => setConfirming(false)} disabled={busy}>Cancel</button>
                     </>
                 ) : (
-                    <button onClick={() => setConfirming(true)}>Invalidate</button>
+                    <>
+                        <button onClick={startEdit}>Edit</button>
+                        <button onClick={() => setConfirming(true)}>Invalidate</button>
+                    </>
                 )}
             </span>
         </li>
@@ -862,19 +929,22 @@ function InviteLinkDialog({ link, title, onClose }) {
 function CreateInviteModal({ eventId, onClose }) {
     const [step, setStep] = useState('name'); // name | creating | done
     const [name, setName] = useState('');
+    const [slots, setSlots] = useState('');   // '' = unlimited guests
     const [invite, setInvite] = useState(null);
 
     const create = async () => {
         setStep('creating');
         // Invite scoped to this event: the redeemer's account can view it and
-        // RSVP. `entrypoint` lands them here; `name` seeds their display name.
+        // RSVP. `entrypoint` lands them here; `name` seeds their display name;
+        // `guestAllowance` caps how many guests they may bring (blank = unlimited).
         const result = await api('/invites', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
                 name: name || undefined,
                 entrypoint: `/events/${eventId}`,
-                grants: [`/events/${eventId}/view`, `/events/${eventId}/join`]
+                grants: [`/events/${eventId}/view`, `/events/${eventId}/join`],
+                guestAllowance: parseSlots(slots, undefined)
             })
         });
         setInvite(result);
@@ -899,9 +969,15 @@ function CreateInviteModal({ eventId, onClose }) {
                         onChange={(e) => setName(e.target.value)}
                         onKeyDown={(e) => { if (e.key === 'Enter') create(); }} />
                 </label>
+                <label>Guest slots
+                    <input type="number" min="0" value={slots}
+                        disabled={step === 'creating'}
+                        placeholder="unlimited"
+                        onChange={(e) => setSlots(e.target.value)} />
+                </label>
                 <div className="actions actions--end">
                     <button onClick={onClose} disabled={step === 'creating'}>Cancel</button>
-                    <button onClick={create} disabled={step === 'creating'}>Create</button>
+                    <button className="primary" onClick={create} disabled={step === 'creating'}>Create</button>
                 </div>
             </div>
         </div>

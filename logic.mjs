@@ -129,29 +129,25 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
     const eventCol = collection(events, 'evt');
     const accountCol = collection(accounts, 'acct');
 
-    // Resolve a caller's grants (glob patterns). Admins (and the CLI) get `**`;
-    // a redeemed account gets whatever grants its invite conferred; anyone else
-    // gets nothing. Looked up per-request from the account store, so grants stay
-    // revocable rather than frozen into the JWT.
-    async function resolveGrants(auth) {
-        if (!auth) return [];
-        if (auth.roles?.includes('admin')) return ['**'];
-        if (auth.sub) {
-            const account = await accountCol.getDoc(auth.sub);
-            return account?.grants ?? [];
-        }
-        return [];
-    }
-
-    // Build the ctx handlers receive: identity + resolved permissions. `can` is
-    // the quiet check (caller decides how to react); `assertPermission` is the
-    // loud one (403 via ClientError).
+    // Build the ctx handlers receive: identity + resolved permissions + the
+    // caller's account doc. Admins (and the CLI) get `**`; a redeemed account
+    // gets whatever grants its invite conferred; anyone else nothing. Resolved
+    // per-request from the account store (so grants stay revocable, not frozen
+    // into the JWT). `account` is the same fetch — it carries `guestAllowance`.
+    // `can` is the quiet check; `assertPermission` is the loud one (403).
     async function makeContext(auth) {
-        const grants = await resolveGrants(auth);
+        let account = null;
+        let grants = [];
+        if (auth?.roles?.includes('admin')) grants = ['**'];
+        else if (auth?.sub) {
+            account = await accountCol.getDoc(auth.sub);
+            grants = account?.grants ?? [];
+        }
         return {
             auth: auth ?? null,
             isAdmin: auth?.roles?.includes('admin') ?? false,
             grants,
+            account,   // caller's account (null for admin/anon); carries guestAllowance
             can: (path) => can(grants, path),
             assertPermission: (path) => {
                 if (!can(grants, path)) {
@@ -299,6 +295,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
         let inviteGrants = [];
         let entrypoint;
         let inviteName;
+        let inviteAllowance;
         await invites.edit(match.path, (draft) => {
             if (!draft) return;
             inviteId = draft.id;
@@ -307,6 +304,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
             inviteGrants = draft.grants ? [...draft.grants] : [];
             entrypoint = draft.entrypoint;
             inviteName = draft.name;
+            inviteAllowance = draft.guestAllowance;   // max guests (undefined = ∞)
             if (draft.accountId) { boundId = draft.accountId; return; }
             draft.accountId = newAccountId;
             boundId = newAccountId;
@@ -318,7 +316,8 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                 createdAt: new Date().toISOString(),
                 invite: inviteId,
                 grants: inviteGrants,   // what this account is permitted to do
-                name: inviteName        // seed the display name (editable later)
+                name: inviteName,       // seed the display name (editable later)
+                guestAllowance: inviteAllowance   // max guests they may bring
             }));
             // Mirror the conferred event grants onto those events' member lists
             // (feeds the byUser index), one entry per distinct event.
@@ -372,12 +371,19 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                         type: 'string',
                         description: "Display name to seed on the redeemer's "
                                 + 'account (they can edit it later).'
+                    },
+                    guestAllowance: {
+                        type: 'integer',
+                        minimum: 0,
+                        description: 'Max guests the redeemer may bring to their '
+                                + 'RSVPs (copied to their account at redemption). '
+                                + 'Omit for unlimited.'
                     }
                 }
             },
             // awaitIndex: an invite must be findable by its token the instant
             // create returns, so redemption never races the index.
-            handler: ({ email, note, grants, entrypoint, name }, ctx) => {
+            handler: ({ email, note, grants, entrypoint, name, guestAllowance }, ctx) => {
                 // Authorize by what's conferred. A global admin confers anything;
                 // anyone else may only mint an invite whose every grant falls
                 // under an event they administer (never a bare or global-scoped
@@ -399,7 +405,8 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                 }
                 return inviteCol.createDoc({
                     token: crypto.randomBytes(24).toString('hex'), // 192-bit
-                    ...stripUndefined({ email, note, grants, entrypoint, name })
+                    ...stripUndefined({ email, note, grants, entrypoint, name,
+                        guestAllowance })
                 }, { awaitIndex: true });
             }
         },
@@ -892,6 +899,52 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
             }
         },
 
+        // Edit an open invite's label + guest allowance from the admin screen.
+        // Event-admin gated; only invites conferring access to this event are
+        // reachable. Affects future redemptions (allowance is copied to the
+        // account at redeem time).
+        'events.updateInvite': {
+            summary: "Edit an invite's name / guest allowance (admin).",
+            description: 'Updates the `name` and/or `guestAllowance` of an invite '
+                    + 'that confers access to this event. Event-admin gated. '
+                    + '`guestAllowance` null clears it (unlimited); omit a field '
+                    + 'to leave it unchanged. Returns the invite (token omitted).',
+            http: { method: 'PATCH', path: '/events/:eventId/invites/:inviteId' },
+            input: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['eventId', 'inviteId'],
+                properties: {
+                    eventId: { type: 'string', description: 'Event id (evt_…).' },
+                    inviteId: { type: 'string', description: 'Invite id (nvt_…).' },
+                    name: { type: 'string', description: 'Display name / label.' },
+                    guestAllowance: {
+                        type: ['integer', 'null'],
+                        minimum: 0,
+                        description: 'Max guests (null = unlimited; omit = unchanged).'
+                    }
+                }
+            },
+            handler: async ({ eventId, inviteId, name, guestAllowance }, ctx) => {
+                ctx.assertPermission(`/events/${eventId}/admin`);
+                const invite = await inviteCol.getDoc(inviteId);
+                if (!invite || !(invite.grants ?? [])
+                        .some((g) => eventIdFromGrant(g) === eventId)) {
+                    return null;   // absent or not this event's invite — hide
+                }
+                const { newValue } = await invites.edit(`${inviteId}.json`,
+                        (draft) => {
+                            if (!draft) return;
+                            if (name !== undefined) draft.name = name;
+                            if (guestAllowance !== undefined) {
+                                if (guestAllowance === null) delete draft.guestAllowance;
+                                else draft.guestAllowance = guestAllowance;
+                            }
+                        });
+                return newValue ? withoutToken(newValue) : null;
+            }
+        },
+
         // Owner-or-admin: you can read/edit your own account; admin, any.
         'accounts.get': {
             summary: 'Fetch an account — full for owner/admin, public view else.',
@@ -1128,13 +1181,26 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
             handler: async ({ eventId, accountId, response, guests }, ctx) => {
                 const t = await reservationTarget(eventId, accountId, ctx);
                 if (!t) return null;
+                const list = guests ?? [];
+                // Enforce the reserver's guest allowance — unless the caller is
+                // an admin over this event (they may seat any party size). A
+                // non-admin only reaches here for their OWN reservation, so the
+                // cap is on ctx.account (the caller's own).
+                const eventAdmin = ctx.can('/server/admin')
+                        || ctx.can(`/events/${eventId}/admin`);
+                const allowance = ctx.account?.guestAllowance;
+                if (!eventAdmin && allowance != null && list.length > allowance) {
+                    throw new ClientError(
+                            `You may bring at most ${allowance} guest`
+                            + `${allowance === 1 ? '' : 's'}.`, 422);
+                }
                 const { newValue } = await reservations.edit(
                         `${t.key}.json`, (draft) => ({
                             id: t.key,
                             eventId,
                             accountId: t.acctId,
                             response,
-                            guests: guests ?? [],
+                            guests: list,
                             createdAt: draft?.createdAt
                                     ?? new Date().toISOString(),
                             updatedAt: new Date().toISOString()
@@ -1279,7 +1345,11 @@ function eventAccess(eventId, ctx) {
     return {
         admin,
         join,
-        participant: admin || join || ctx.can(`/events/${eventId}/view`)
+        participant: admin || join || ctx.can(`/events/${eventId}/view`),
+        // The viewer's effective guest allowance (null = unlimited). Admins over
+        // the event are exempt; everyone else is capped by their account. Lets
+        // the client stop offering "Add guest" past the limit (server enforces).
+        guestAllowance: admin ? null : (ctx.account?.guestAllowance ?? null)
     };
 }
 
@@ -1296,5 +1366,12 @@ function projectEvent(event, guestList, access) {
     const view = access.admin
             ? { ...event, ...times, guestList }
             : { id: event.id, ...times, config: event.config, guestList };
-    return { ...view, access: { admin: access.admin, join: access.join } };
+    return {
+        ...view,
+        access: {
+            admin: access.admin,
+            join: access.join,
+            guestAllowance: access.guestAllowance
+        }
+    };
 }

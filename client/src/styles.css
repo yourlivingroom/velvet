@@ -175,8 +175,16 @@
         padding: 1.25rem 1.5rem;
     }
 
-    /* RSVP segmented control + guest management */
-    .rsvp-block { margin: 1.25rem 0; }
+    /* RSVP segmented control + guest management, wrapped in its own embedded
+       card so it stands out from the event details above and the attendee tabs
+       below (themeable via --rsvp-card). */
+    .rsvp-block {
+        margin: 1.5rem 0;
+        padding: 1rem 1.25rem;
+        background: var(--rsvp-card, var(--surface));
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+    }
     .rsvp { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); overflow: hidden; }
     .rsvp__option { border: none; border-radius: 0; background: var(--surface); padding: .5rem 1.1rem; }
     .rsvp__option + .rsvp__option { border-left: 1px solid var(--border-strong); }
@@ -204,6 +212,10 @@
         height: 2.5rem; min-height: 0; padding: 0 .85rem; line-height: 1;
         display: inline-flex; align-items: center; justify-content: center;
     }
+    .guests__limit { margin: .4rem 0 0; }
+    /* invite row in edit mode: name flexes, slots is a narrow number field */
+    .invite-edit input { width: auto; flex: 1; min-width: 0; }
+    .invite-edit input[type="number"] { flex: 0 0 6rem; }
 
     /* tabs */
     .tabs { display: flex; gap: 1.25rem; border-bottom: 1px solid var(--border); margin-top: 1.5rem; }

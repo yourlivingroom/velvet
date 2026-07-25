@@ -133,15 +133,21 @@ one both positionally *and* by flag is an error. No other file needs editing.
   lists invites conferring access to the event that nobody has redeemed yet
   (`!accountId`), token omitted; **`events.revokeInvite`**
   (`DELETE /events/:eventId/invites/:inviteId`) deletes one to invalidate its
-  link (only if it references this event). (`PATCH /events/:eventId/config`
-  remains for editing config; there's no GET on that path — read config via the
-  graded `GET /events/:id`.)
+  link (only if it references this event); **`events.updateInvite`**
+  (`PATCH` same path) edits an invite's `name`/`guestAllowance` (see invites).
+  (`PATCH /events/:eventId/config` remains for editing config; there's no GET on
+  that path — read config via the graded `GET /events/:id`.)
 - `reservations` — an account's RSVP to an event, one per (event, account),
   keyed `<eventId>~<accountId>`. `PUT/GET/DELETE /events/:eventId/reservation`
   gated (in-handler) on `/events/:id/join`; `accountId` defaults to the caller,
   another account requires admin over that event (`/server/admin` *or*
   `/events/:id/admin`). Fields: `response` (going/maybe/not-going),
-  `guests` (array of possibly-empty names).
+  `guests` (array of possibly-empty names). **`reservations.set` enforces the
+  reserver's guest allowance**: `guests.length` may not exceed the account's
+  `guestAllowance` (422), *unless* the caller is an admin over the event (exempt —
+  they may seat any party size). The viewer's effective allowance is surfaced in
+  the graded event view's `access.guestAllowance` (null = unlimited; admins get
+  null) so the SPA can stop offering "Add guest" past the cap.
 - `invites` — an invite **is a token**. `invites.create` mints one, authorized
   by *what it confers*: a global admin may confer any `grants`; anyone else may
   only mint an invite whose every grant falls under an event they administer
@@ -151,14 +157,18 @@ one both positionally *and* by flag is an error. No other file needs editing.
   `id` (`nvt_…`) is a non-secret handle, its `token` field is the secret you put
   in a link, its `grants` are the permissions redemption confers, an optional
   `entrypoint` (same-origin relative path) is echoed back at redeem as where to
-  start, and an optional `name` seeds the redeemer's account. `token`/`id` are
+  start, an optional `name` seeds the redeemer's account, and an optional
+  **`guestAllowance`** (int ≥ 0; omit = unlimited) caps how many guests the
+  redeemer may bring — copied to the account at redemption. `token`/`id` are
   separate so future expiry/single-use lives on the token without touching
   account identity. **The token is shown once, in the create response** —
   `invites.get`/`list` are admin-only and omit it (redemption finds it via the
-  byToken index, not a read). Redeeming binds an **account**.
+  byToken index, not a read). An open invite's `name`/`guestAllowance` are
+  editable from the admin "Open invites" screen (`events.updateInvite`).
+  Redeeming binds an **account**.
 - `accounts` — non-admin identities, auto-created (and bound to the invite) on
-  first redemption, carrying the invite's `grants` and `name`; a JWT's `sub` is
-  an account id. `accounts.update` (`PATCH /accounts/:accountId`) is
+  first redemption, carrying the invite's `grants`, `name`, and `guestAllowance`
+  (the guest cap enforced by `reservations.set`); a JWT's `sub` is an account id. `accounts.update` (`PATCH /accounts/:accountId`) is
   **owner-or-admin** (`ownAccountOrAdmin` helper) and sets `name` and `avatar`
   (never grants — no self-escalation). **`avatar`** is a profile picture, stored
   as a `{ $blob }` ref into the account's *own* `accounts/<id>` bucket (see Blob
@@ -477,16 +487,21 @@ double as client routes via the negotiation above):
   to the config Patch, which now also carries the `$blob` ref, *and* the
   operative `PATCH /events/:eventId`) **and** an "Admin actions"
   accordion (Create invite) both gated on `access.admin` (so event admins see
-  them), an RSVP strip gated on `access.join`, and the RSVP roster (`Rsvps`) —
-  a "Who's Going" tab listing the *going* responses then the *maybes* (tagged
-  "(maybe going)"), and a "Can't go" tab for the declines; names link to
+  them), an RSVP block gated on `access.join` (`RsvpStrip`: the going/maybe/not-
+  going segmented control **plus guest management** when going/maybe — add/edit/
+  remove named guests as clickable chips, capped at `access.guestAllowance`; the
+  "Add guest" button hides at the cap and a "N of M guests allowed" hint shows),
+  and the RSVP roster (`Rsvps`) — a "Who's Going" tab listing the *going*
+  responses then the *maybes* (tagged "(maybe going)"), its count a **head count**
+  (attendees + guests), and a "Can't go" tab for the declines; names link to
   profiles. The Admin actions accordion also links to **User management**
   (`/events/:eventId/users` → `EventUsers`, admin-only): the full roster from
   `events.members` (including no-response invitees), each with a two-click
   **Revoke invite** that calls `events.removeMember`; and **Open invites**
   (`/events/:eventId/invites` → `EventInvites`, admin-only): unredeemed invite
-  links from `events.invites`, each with a two-click **Invalidate**
-  (`events.revokeInvite`).
+  links from `events.invites`, each with **Edit** (name + guest slots,
+  `events.updateInvite`) and a two-click **Invalidate** (`events.revokeInvite`).
+  Create invite also takes a **Guest slots** number (blank = unlimited).
 - `/accounts/:accountId` → profile page: editable only for your own account —
   display name **and a profile-picture upload** (to your `accounts/<id>` bucket
   via the resumable protocol + `<progress>` bar; the `$blob` ref is saved through
