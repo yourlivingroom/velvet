@@ -769,8 +769,8 @@ function EventUsers({ eventId }) {
     );
 }
 
-// One roster row: identity + RSVP status, with a two-click "Revoke invite" (this
-// removes their event access and RSVP — so confirm before firing).
+// One roster row: identity + RSVP status, with a "Revoke invite" that removes
+// their event access and RSVP — confirmed via ConfirmModal.
 function RosterRow({ user, eventId, onRevoke, canRevoke }) {
     const [confirming, setConfirming] = useState(false);
     const [busy, setBusy] = useState(false);
@@ -783,16 +783,15 @@ function RosterRow({ user, eventId, onRevoke, canRevoke }) {
             </span>
             {canRevoke && (
                 <span className="roster__actions">
-                    {confirming ? (
-                        <>
-                            <button onClick={async () => { setBusy(true); await onRevoke(user.id); }}
-                                disabled={busy}>Revoke</button>
-                            <button onClick={() => setConfirming(false)} disabled={busy}>Cancel</button>
-                        </>
-                    ) : (
-                        <button onClick={() => setConfirming(true)}>Revoke invite</button>
-                    )}
+                    <button className="danger" onClick={() => setConfirming(true)}>Revoke invite</button>
                 </span>
+            )}
+            {confirming && (
+                <ConfirmModal title="Revoke invite?"
+                    message={`This removes ${user.name || 'this person'} from the event — their RSVP, guests, and access.`}
+                    confirmLabel="Revoke invite" danger busy={busy}
+                    onConfirm={async () => { setBusy(true); await onRevoke(user.id); }}
+                    onClose={() => setConfirming(false)} />
             )}
         </li>
     );
@@ -897,20 +896,16 @@ function InviteRow({ invite, onInvalidate, onUpdate }) {
                 {allowanceLabel}{created ? ` · created ${created}` : ''}
             </span>
             <span className="roster__actions">
-                {confirming ? (
-                    <>
-                        <button className="danger"
-                            onClick={async () => { setBusy(true); await onInvalidate(invite.id); }}
-                            disabled={busy}>Invalidate</button>
-                        <button onClick={() => setConfirming(false)} disabled={busy}>Cancel</button>
-                    </>
-                ) : (
-                    <>
-                        <button onClick={startEdit}>Edit</button>
-                        <button onClick={() => setConfirming(true)}>Invalidate</button>
-                    </>
-                )}
+                <button onClick={startEdit}>Edit</button>
+                <button className="danger" onClick={() => setConfirming(true)}>Invalidate</button>
             </span>
+            {confirming && (
+                <ConfirmModal title="Invalidate invite?"
+                    message={`The link for "${invite.name || 'this invite'}" will stop working.`}
+                    confirmLabel="Invalidate" danger busy={busy}
+                    onConfirm={async () => { setBusy(true); await onInvalidate(invite.id); }}
+                    onClose={() => setConfirming(false)} />
+            )}
         </li>
     );
 }
@@ -1293,21 +1288,17 @@ function ConfirmModal({ title, message, confirmLabel = 'Confirm', danger,
 }
 
 function LogoutModal({ onClose }) {
+    const [busy, setBusy] = useState(false);
     const logout = async () => {
+        setBusy(true);
         await api('/session', { method: 'DELETE' });   // clears the cookie server-side
         window.location.href = '/';
     };
     return (
-        <div className="overlay" onClick={onClose}>
-            <div className="dialog" onClick={(e) => e.stopPropagation()}>
-                <h2>Really log out?</h2>
-                <p>You will need to be re-invited.</p>
-                <div className="actions actions--end">
-                    <button onClick={onClose}>Cancel</button>
-                    <button onClick={logout}>Log out</button>
-                </div>
-            </div>
-        </div>
+        <ConfirmModal title="Really log out?"
+            message="You will need to be re-invited."
+            confirmLabel="Log out" busy={busy}
+            onConfirm={logout} onClose={onClose} />
     );
 }
 
