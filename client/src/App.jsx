@@ -269,10 +269,18 @@ const UserPlusIcon = () => (
 // that opens an inline editor (text box + Save + Remove). `current` is the
 // viewer's response; `guests` their saved guest names — preserved across a
 // response flip, and the whole reservation is re-PUT on any guest edit.
-function RsvpStrip({ eventId, current, guests, allowance, onDone }) {
+// `accountId` targets a specific account (an event admin managing someone else's
+// RSVP from their profile page); omit for the caller's own. `showAllowanceNote`
+// shows the second-person "you may bring…" line — off when an admin manages
+// someone (the copy doesn't fit, and admins aren't capped anyway).
+// `manage` turns on the admin controls (a "No response" option that clears the
+// reservation, and a Revoke-invite button via `onRevoke`).
+function RsvpStrip({ eventId, accountId, current, guests, allowance,
+        showAllowanceNote = true, manage = false, onRevoke, onDone }) {
     const [saving, setSaving] = useState(false);
     const [editIdx, setEditIdx] = useState(null);   // null | index | 'new'
     const [editValue, setEditValue] = useState('');
+    const [revoking, setRevoking] = useState(false);
     // allowance null = unlimited; a number caps how many guests you may bring.
     const atLimit = allowance != null && guests.length >= allowance;
 
@@ -281,8 +289,18 @@ function RsvpStrip({ eventId, current, guests, allowance, onDone }) {
         await api(`/events/${eventId}/reservation`, {
             method: 'PUT',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ response, guests: nextGuests })
+            body: JSON.stringify({ accountId, response, guests: nextGuests })
         });
+        await onDone();
+        setSaving(false);
+    };
+
+    // "No response" — delete the reservation so they're back to unanswered.
+    const clearRsvp = async () => {
+        if (current == null) return;
+        setSaving(true);
+        await api(`/events/${eventId}/reservation`
+            + (accountId ? `?accountId=${accountId}` : ''), { method: 'DELETE' });
         await onDone();
         setSaving(false);
     };
@@ -340,6 +358,13 @@ function RsvpStrip({ eventId, current, guests, allowance, onDone }) {
                         </button>
                     );
                 })}
+                {manage && (
+                    <button onClick={clearRsvp} disabled={saving}
+                        aria-pressed={current == null}
+                        className={`rsvp__option${current == null ? ' rsvp__option--active' : ''}`}>
+                        No response
+                    </button>
+                )}
             </div>
             {attending && (
                 <div className="guests">
@@ -365,15 +390,31 @@ function RsvpStrip({ eventId, current, guests, allowance, onDone }) {
                             Add guest
                         </button>
                     )}
-                    <p className="muted guests__limit">
-                        {allowance == null
-                            ? 'You are welcome to bring guests!'
-                            : allowance === 0
-                                ? 'Unfortunately, no +1s are allowed.'
-                                : allowance === 1
-                                    ? 'You are welcome to bring a guest!'
-                                    : `You are welcome to bring up to ${allowance} guests!`}
-                    </p>
+                    {showAllowanceNote && (
+                        <p className="muted guests__limit">
+                            {allowance == null
+                                ? 'You are welcome to bring guests!'
+                                : allowance === 0
+                                    ? 'Unfortunately, no +1s are allowed.'
+                                    : allowance === 1
+                                        ? 'You are welcome to bring a guest!'
+                                        : `You are welcome to bring up to ${allowance} guests!`}
+                        </p>
+                    )}
+                </div>
+            )}
+            {manage && onRevoke && (
+                <div className="rsvp__admin">
+                    <button className="danger" onClick={() => setRevoking(true)}>
+                        Revoke invite
+                    </button>
+                    {revoking && (
+                        <ConfirmModal title="Revoke invite?"
+                            message="This removes them from the event entirely — their RSVP, guests, and access."
+                            confirmLabel="Revoke invite" danger busy={saving}
+                            onConfirm={async () => { setSaving(true); await onRevoke(); }}
+                            onClose={() => setRevoking(false)} />
+                    )}
                 </div>
             )}
         </div>
@@ -1106,23 +1147,45 @@ function AccountPage({ accountId }) {
         setUploadPct(null);
     };
 
-    // Event context: read this account's RSVP out of the event's guest list
-    // (which we can see as a participant), and note whether *we* admin it.
-    useEffect(() => {
-        if (!eventId) return;
-        api(`/events/${eventId}`)
+    // Event context: read this account's RSVP (response + guests) out of the
+    // event's guest list, and note whether *we* admin it. Reloaded after an admin
+    // edits the RSVP via the strip below.
+    const loadEventRsvp = () => {
+        if (!eventId) return Promise.resolve();
+        return api(`/events/${eventId}`)
             .then((e) => {
                 if (!e || e.error) return;
                 setEventAdmin(!!e.access?.admin);
                 const entry = (e.guestList ?? []).find((g) => g.id === accountId);
-                setEventRsvp({ response: entry?.response ?? null });
+                setEventRsvp({
+                    response: entry?.response ?? null,
+                    guests: entry?.guests ?? []
+                });
             })
             .catch(() => {});
-    }, [eventId, accountId]);
+    };
+    useEffect(() => { loadEventRsvp(); }, [eventId, accountId]);
 
-    const rsvpLine = eventId && eventRsvp ? (
-        <p className="rsvp-status">{RSVP_LABELS[eventRsvp.response] ?? 'No Response'}</p>
-    ) : null;
+    // Revoke: remove this account from the event entirely, then land on the
+    // event's user-management list (they'll be gone from it).
+    const revokeMember = async () => {
+        await api(`/events/${eventId}/members/${accountId}`, { method: 'DELETE' });
+        window.location.href = `/events/${eventId}/users`;
+    };
+
+    // An event admin viewing someone else's profile gets the full RSVP system so
+    // they can set that person's status and guests (admins aren't guest-capped),
+    // clear it ("No response"), or revoke the invite; everyone else sees the
+    // read-out line.
+    const rsvpSection = !(eventId && eventRsvp) ? null
+        : (eventAdmin && !mine) ? (
+            <RsvpStrip eventId={eventId} accountId={accountId}
+                current={eventRsvp.response} guests={eventRsvp.guests ?? []}
+                allowance={null} showAllowanceNote={false} manage
+                onRevoke={revokeMember} onDone={loadEventRsvp} />
+        ) : (
+            <p className="rsvp-status">{RSVP_LABELS[eventRsvp.response] ?? 'No Response'}</p>
+        );
 
     // Grant affordances: never on your own profile. Full admin needs `**` (i.e.
     // a global admin); event admin needs to admin *this* event.
@@ -1187,7 +1250,7 @@ function AccountPage({ accountId }) {
                         <input value={name} autoFocus
                             onChange={(e) => setName(e.target.value)} />
                     </label>
-                    {rsvpLine}
+                    {rsvpSection}
                     <div className="actions">
                         <button onClick={save} disabled={state === 'saving' || uploadPct !== null}>Save</button>
                         <button onClick={goBack} disabled={state === 'saving'}>Cancel</button>
@@ -1199,12 +1262,33 @@ function AccountPage({ accountId }) {
                         <Avatar name={name} avatar={avatarObj} size={72} />
                         <p className="profile__name">{name || 'Unnamed'}</p>
                     </div>
-                    {rsvpLine}
+                    {rsvpSection}
                     <p><button onClick={goBack}>← Back</button></p>
                     {adminControls}
                 </div>
             )}
         </main>
+    );
+}
+
+// Reusable "Are you sure?" confirmation modal. `danger` styles the confirm as a
+// destructive action; `busy` disables the buttons while the action runs.
+function ConfirmModal({ title, message, confirmLabel = 'Confirm', danger,
+        busy, onConfirm, onClose }) {
+    return (
+        <div className="overlay" onClick={busy ? undefined : onClose}>
+            <div className="dialog" onClick={(e) => e.stopPropagation()}>
+                <h2>{title}</h2>
+                {message && <p>{message}</p>}
+                <div className="actions actions--end">
+                    <button onClick={onClose} disabled={busy}>Cancel</button>
+                    <button className={danger ? 'danger' : 'primary'}
+                        onClick={onConfirm} disabled={busy}>
+                        {confirmLabel}
+                    </button>
+                </div>
+            </div>
+        </div>
     );
 }
 

@@ -213,6 +213,8 @@
         display: inline-flex; align-items: center; justify-content: center;
     }
     .guests__limit { margin: .4rem 0 0; }
+    /* admin-only revoke action inside the manage RSVP card */
+    .rsvp__admin { display: flex; gap: .5rem; margin-top: 1rem; padding-top: .75rem; border-top: 1px solid var(--border); }
     /* invite row in edit mode: name flexes, slots is a narrow number field */
     .invite-edit input { width: auto; flex: 1; min-width: 0; }
     .invite-edit input[type="number"] { flex: 0 0 6rem; }
