@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import fs from 'fs/promises';
 import pathLib from 'path';
-import pulpDb from '@livingroom/pulp-db';
+import pulpDb from '@yourlivingroom/pulp-db';
 import { SignJWT, jwtVerify } from 'jose';
 
 // Auth for velvet, in two halves the MCP spec (RFC 9728 / 8414 / 7591) expects:
@@ -138,12 +138,12 @@ export async function registerAuth(fastify,
 
     async function sweepExpired() {
         const now = Date.now();
-        const rows = await codes.list();
-        await Promise.all(rows
-                .filter(r => !r.value || r.value.expiresAt <= now)
-                .map(r => codes.edit(r.path, (cur, { delete: del }) => {
-                    if (cur) del();
-                })));
+        const expired = [];
+        for await (const r of codes.list()) {
+            if (!r.value || r.value.expiresAt <= now) expired.push(r.path);
+        }
+        await Promise.all(expired.map(
+                path => codes.edit(path, (cur, { remove }) => remove())));
     }
 
     async function mintCode() {
@@ -170,10 +170,10 @@ export async function registerAuth(fastify,
     async function redeemCode(code) {
         if (!/^[0-9a-f]{8}$/.test(code ?? '')) return false;
         let valid = false;
-        await codes.edit(`${code}.json`, (cur, { delete: del }) => {
+        await codes.edit(`${code}.json`, (cur, { remove }) => {
             if (!cur) return;
             if (cur.expiresAt > Date.now()) valid = true;
-            del();
+            remove();
         });
         return valid;
     }

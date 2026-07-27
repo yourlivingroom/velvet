@@ -1,8 +1,15 @@
 import crypto from 'crypto';
-import pulpDb from '@livingroom/pulp-db';
+import pulpDb from '@yourlivingroom/pulp-db';
 import jsonpatch from 'fast-json-patch';
 import { ClientError } from './errors.mjs';
 import { can } from './permissions.mjs';
+
+// pulp-db's list() streams; collect it where we want the whole array.
+async function collect(asyncIterable) {
+    const items = [];
+    for await (const item of asyncIterable) items.push(item);
+    return items;
+}
 
 const { applyPatch } = jsonpatch;
 
@@ -109,15 +116,16 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                 return (await store.get(`${id}.json`)) ?? null;
             },
             async listDocs() {
-                const rows = await store.list();
-                return rows.map(r => r.value);
+                const values = [];
+                for await (const row of store.list()) values.push(row.value);
+                return values;
             },
             async deleteDoc(id) {
                 let deleted = null;
-                await store.edit(`${id}.json`, (draft, { delete: del }) => {
+                await store.edit(`${id}.json`, (draft, { remove }) => {
                     if (draft === undefined) return;
                     deleted = JSON.parse(JSON.stringify(draft)); // plain snapshot
-                    del();
+                    remove();
                 });
                 return deleted;
             }
@@ -252,7 +260,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
     // "who's coming" into event reads.
     async function guestListsByEvent() {
         const [rows, accts] = await Promise.all([
-            reservations.list(), accountCol.listDocs()
+            collect(reservations.list()), accountCol.listDocs()
         ]);
         const acctById = new Map(accts.map(a => [a.id, a]));
         const byEvent = new Map();
@@ -762,7 +770,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                 const event = await eventCol.getDoc(eventId);
                 if (!event) return null;
                 const [accts, resvRows] = await Promise.all([
-                    accountCol.listDocs(), reservations.list()
+                    accountCol.listDocs(), collect(reservations.list())
                 ]);
                 const acctById = new Map(accts.map((a) => [a.id, a]));
                 const respByAcct = new Map();
@@ -827,9 +835,7 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                 // Drop from the member list (byUser index) + delete the RSVP.
                 await removeEventMember(eventId, accountId);
                 await reservations.edit(`${eventId}~${accountId}.json`,
-                        (draft, { delete: del }) => {
-                            if (draft !== undefined) del();
-                        });
+                        (draft, { remove }) => remove());
                 return { id: accountId, removed: true };
             }
         },
@@ -1251,10 +1257,10 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
                 if (!t) return null;
                 let deleted = null;
                 await reservations.edit(`${t.key}.json`,
-                        (draft, { delete: del }) => {
+                        (draft, { remove }) => {
                             if (draft === undefined) return;
                             deleted = JSON.parse(JSON.stringify(draft));
-                            del();
+                            remove();
                         });
                 return deleted;
             }
