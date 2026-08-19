@@ -1,4 +1,4 @@
-import React, { useContext, useEffect, useState } from 'react';
+import React, { useContext, useEffect, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 
 // Fetches from the same paths the app is mounted at — Accept: application/json
@@ -509,10 +509,13 @@ function EventWallpaper({ src }) {
     );
 }
 
-function EventDetail({ id }) {
-    const session = useSession();
+// The dedicated event editor at /events/:id/edit — just the edit form, no
+// event display. It keeps EventDetail's "card over the cover" chrome (wallpaper
+// behind, event-body panel in front) so an admin gets a live feel for the theme
+// and cover photo while editing; the wallpaper tracks the *pending* pick so a new
+// cover previews before Save. Save/Cancel navigate back to the event.
+function EventEdit({ id }) {
     const [event, setEvent] = useState(undefined);
-    const [editing, setEditing] = useState(false);
     const [form, setForm] = useState({
         title: '', description: '', startsAt: '', endsAt: '', picture: '',
         location: '', locationHref: ''
@@ -521,39 +524,65 @@ function EventDetail({ id }) {
     const [uploadPct, setUploadPct] = useState(null);   // null = idle, 0..1 = busy
     const [pickedName, setPickedName] = useState('');  // filename we show ourselves
 
-    const load = () => api(`/events/${id}`).then(setEvent).catch(() => setEvent(null));
-    useEffect(() => { load(); }, [id]);
+    const back = `/events/${id}`;
+
+    // Unsaved-changes guard. Because navigation here is full page loads (the back
+    // link, browser back, tab close), the browser's native beforeunload prompt is
+    // the right seam. `pristineRef` is the form as loaded; the form is "dirty" when
+    // it diverges. Save/Cancel are the *explicit* exits, so they raise `bypassRef`
+    // to suppress the prompt on their own navigation. Refs (not state) so the
+    // once-registered listener always reads the latest values without re-binding.
+    const pristineRef = useRef(null);
+    const dirtyRef = useRef(false);
+    const bypassRef = useRef(false);
+    dirtyRef.current = pristineRef.current !== null
+        && JSON.stringify(form) !== pristineRef.current;
+
+    useEffect(() => {
+        const onBeforeUnload = (e) => {
+            if (dirtyRef.current && !bypassRef.current) {
+                e.preventDefault();
+                e.returnValue = '';   // legacy browsers require a set returnValue
+            }
+        };
+        window.addEventListener('beforeunload', onBeforeUnload);
+        return () => window.removeEventListener('beforeunload', onBeforeUnload);
+    }, []);
+
+    useEffect(() => {
+        api(`/events/${id}`)
+            .then((e) => {
+                setEvent(e);
+                const config = e?.config ?? {};
+                const loaded = {
+                    title: config.title ?? '',
+                    description: config.description ?? '',
+                    startsAt: toLocalInput(e?.startsAt),
+                    endsAt: toLocalInput(e?.endsAt),
+                    picture: config.picture?.$blob ?? '',   // the current cover's ref
+                    location: config.location ?? '',
+                    locationHref: config.locationHref ?? ''
+                };
+                setForm(loaded);
+                pristineRef.current = JSON.stringify(loaded);
+            })
+            .catch(() => setEvent(null));
+    }, [id]);
 
     if (event === undefined) {
         return <main><p>Loading…</p></main>;
     }
-    if (!event || event.error) {
+    if (!event || event.error || !event.access?.admin) {
         return (
             <main>
-                <p className="back"><a href="/events">← events</a></p>
-                <p>Event not found.</p>
+                <p className="back"><a href={back}>← event</a></p>
+                <p>{!event || event.error ? 'Event not found.'
+                    : 'You don’t have permission to edit this event.'}</p>
             </main>
         );
     }
 
     const config = event.config ?? {};
-    const guests = event.guestList ?? [];
-    // My own RSVP (if any) — the guest list is keyed by account id.
-    const mine = guests.find((g) => g.id === session.accountId);
-
-    const startEdit = () => {
-        setForm({
-            title: config.title ?? '',
-            description: config.description ?? '',
-            startsAt: toLocalInput(event.startsAt),
-            endsAt: toLocalInput(event.endsAt),
-            picture: config.picture?.$blob ?? '',   // the current cover's ref
-            location: config.location ?? '',
-            locationHref: config.locationHref ?? ''
-        });
-        setPickedName('');
-        setEditing(true);
-    };
 
     // Cover image: upload to this event's bucket (event admins can write it),
     // then stash the returned $blob ref in the form — persisted on Save.
@@ -611,17 +640,91 @@ function EventDetail({ id }) {
                 endsAt: localInputToIso(form.endsAt)
             })
         });
-        await load();
-        setSaving(false);
-        setEditing(false);
+        bypassRef.current = true;   // an explicit save — don't prompt on the way out
+        window.location.href = back;
     };
 
-    // The cover is the page's wallpaper in both view and edit mode, so editing
-    // looks the same — the form just fills the panel. While editing it tracks the
-    // *pending* pick (form.picture), so the wallpaper live-previews cover changes.
+    // The wallpaper tracks the *pending* pick (form.picture) so a new cover
+    // live-previews. No cover → EventWallpaper falls back to the default gradient.
+    const coverUrl = form.picture ? `/blobs/${form.picture}` : null;
+
+    return (
+        <main className="event-page">
+            <EventWallpaper src={coverUrl} />
+            <p className="back"><a href={back}>← event</a></p>
+            <div className="event-body">
+                <label>Title
+                    <input value={form.title} autoFocus
+                        onChange={(e) => setForm({ ...form, title: e.target.value })} />
+                </label>
+                <label>Description
+                    <textarea value={form.description}
+                        onChange={(e) => setForm({ ...form, description: e.target.value })} />
+                </label>
+                <label>Location
+                    <input value={form.location}
+                        placeholder="e.g. Grandma's house"
+                        onChange={(e) => setForm({ ...form, location: e.target.value })} />
+                </label>
+                <label>Location link (optional)
+                    <input type="url" value={form.locationHref}
+                        placeholder="https://maps.example.com/…"
+                        disabled={!form.location}
+                        onChange={(e) => setForm({ ...form, locationHref: e.target.value })} />
+                </label>
+                <label>Starts
+                    <input type="datetime-local" value={form.startsAt}
+                        onChange={(e) => setForm({ ...form, startsAt: e.target.value })} />
+                </label>
+                <label>Ends
+                    <input type="datetime-local" value={form.endsAt}
+                        onChange={(e) => setForm({ ...form, endsAt: e.target.value })} />
+                </label>
+                <label>Cover image</label>
+                <div className="cover-edit">
+                    <ImagePicker
+                        src={form.picture ? `/blobs/${form.picture}` : null}
+                        name={pickedName} onChange={pickImage}
+                        onRemove={() => { setForm({ ...form, picture: '' }); setPickedName(''); }}
+                        disabled={uploadPct !== null} progress={uploadPct} />
+                </div>
+                <div className="actions">
+                    <button onClick={save} disabled={saving || uploadPct !== null}>Save</button>
+                    <button onClick={() => { bypassRef.current = true; window.location.href = back; }}
+                        disabled={saving}>Cancel</button>
+                </div>
+            </div>
+        </main>
+    );
+}
+
+function EventDetail({ id }) {
+    const session = useSession();
+    const [event, setEvent] = useState(undefined);
+
+    const load = () => api(`/events/${id}`).then(setEvent).catch(() => setEvent(null));
+    useEffect(() => { load(); }, [id]);
+
+    if (event === undefined) {
+        return <main><p>Loading…</p></main>;
+    }
+    if (!event || event.error) {
+        return (
+            <main>
+                <p className="back"><a href="/events">← events</a></p>
+                <p>Event not found.</p>
+            </main>
+        );
+    }
+
+    const config = event.config ?? {};
+    const guests = event.guestList ?? [];
+    // My own RSVP (if any) — the guest list is keyed by account id.
+    const mine = guests.find((g) => g.id === session.accountId);
+
     // No cover → EventWallpaper falls back to the default gradient.
-    const activeCover = editing ? form.picture : (config.picture?.$blob ?? '');
-    const coverUrl = activeCover ? `/blobs/${activeCover}` : null;
+    const coverRef = config.picture?.$blob ?? '';
+    const coverUrl = coverRef ? `/blobs/${coverRef}` : null;
 
     return (
         <main className="event-page">
@@ -629,78 +732,34 @@ function EventDetail({ id }) {
             <p className="back"><a href="/events">← events</a></p>
             <div className="event-body">
 
-            {editing ? (
+            <div className="event-detail__header">
                 <div>
-                    <label>Title
-                        <input value={form.title} autoFocus
-                            onChange={(e) => setForm({ ...form, title: e.target.value })} />
-                    </label>
-                    <label>Description
-                        <textarea value={form.description}
-                            onChange={(e) => setForm({ ...form, description: e.target.value })} />
-                    </label>
-                    <label>Location
-                        <input value={form.location}
-                            placeholder="e.g. Grandma's house"
-                            onChange={(e) => setForm({ ...form, location: e.target.value })} />
-                    </label>
-                    <label>Location link (optional)
-                        <input type="url" value={form.locationHref}
-                            placeholder="https://maps.example.com/…"
-                            disabled={!form.location}
-                            onChange={(e) => setForm({ ...form, locationHref: e.target.value })} />
-                    </label>
-                    <label>Starts
-                        <input type="datetime-local" value={form.startsAt}
-                            onChange={(e) => setForm({ ...form, startsAt: e.target.value })} />
-                    </label>
-                    <label>Ends
-                        <input type="datetime-local" value={form.endsAt}
-                            onChange={(e) => setForm({ ...form, endsAt: e.target.value })} />
-                    </label>
-                    <label>Cover image</label>
-                    <div className="cover-edit">
-                        <ImagePicker
-                            src={form.picture ? `/blobs/${form.picture}` : null}
-                            name={pickedName} onChange={pickImage}
-                            onRemove={() => { setForm({ ...form, picture: '' }); setPickedName(''); }}
-                            disabled={uploadPct !== null} progress={uploadPct} />
-                    </div>
-                    <div className="actions">
-                        <button onClick={save} disabled={saving || uploadPct !== null}>Save</button>
-                        <button onClick={() => setEditing(false)} disabled={saving}>Cancel</button>
-                    </div>
-                </div>
-            ) : (
-                <div className="event-detail__header">
-                    <div>
-                        {/* the cover is now the full-view wallpaper (behind) */}
-                        <h1>{config.title || event.id}</h1>
-                        {formatWhen(event.startsAt, event.endsAt) && (
-                            <p className="event-when">{formatWhen(event.startsAt, event.endsAt)}</p>
-                        )}
-                        {config.location && (
-                            <p className="event-location">
-                                {safeHref(config.locationHref) ? (
-                                    <a href={safeHref(config.locationHref)}
-                                        target="_blank" rel="noopener noreferrer">
-                                        {config.location}
-                                    </a>
-                                ) : config.location}
-                            </p>
-                        )}
-                        {config.description && (
-                            <p className="event-description">{config.description}</p>
-                        )}
-                    </div>
-                    {event.access?.admin && (
-                        <button className="icon-button" onClick={startEdit}
-                            title="Edit" aria-label="Edit">
-                            ✏️
-                        </button>
+                    {/* the cover is the full-view wallpaper (behind) */}
+                    <h1>{config.title || event.id}</h1>
+                    {formatWhen(event.startsAt, event.endsAt) && (
+                        <p className="event-when">{formatWhen(event.startsAt, event.endsAt)}</p>
+                    )}
+                    {config.location && (
+                        <p className="event-location">
+                            {safeHref(config.locationHref) ? (
+                                <a href={safeHref(config.locationHref)}
+                                    target="_blank" rel="noopener noreferrer">
+                                    {config.location}
+                                </a>
+                            ) : config.location}
+                        </p>
+                    )}
+                    {config.description && (
+                        <p className="event-description">{config.description}</p>
                     )}
                 </div>
-            )}
+                {event.access?.admin && (
+                    <a className="icon-button" href={`/events/${id}/edit`}
+                        title="Edit" aria-label="Edit">
+                        ✏️
+                    </a>
+                )}
+            </div>
 
             {event.access?.join && (
                 <RsvpStrip eventId={id} current={mine?.response}
@@ -1444,6 +1503,7 @@ function Shell({ path }) {
     const account = path.match(/^\/accounts\/([^/]+)$/);
     const eventUsers = path.match(/^\/events\/([^/]+)\/users$/);
     const eventInvites = path.match(/^\/events\/([^/]+)\/invites$/);
+    const eventEdit = path.match(/^\/events\/([^/]+)\/edit$/);
     const event = path.match(/^\/events\/([^/]+)$/);
     return (
         <SessionContext.Provider value={session}>
@@ -1451,6 +1511,7 @@ function Shell({ path }) {
             {account ? <AccountPage accountId={account[1]} />
                 : eventUsers ? <EventUsers eventId={eventUsers[1]} />
                 : eventInvites ? <EventInvites eventId={eventInvites[1]} />
+                : eventEdit ? <EventEdit id={eventEdit[1]} />
                 : event ? <EventDetail id={event[1]} />
                 : <EventList />}
         </SessionContext.Provider>

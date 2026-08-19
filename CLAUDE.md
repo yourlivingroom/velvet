@@ -481,13 +481,20 @@ double as client routes via the negotiation above):
   show a **← Upcoming events** link back); `/events/:eventId` → event
   detail: the graded view (an optional cover image from `config.picture`'s
   `$blob`, title, a localized schedule line when `startsAt`/`endsAt` are set,
-  description), an edit pencil (title, description, the `startsAt`/`endsAt`
+  description), an edit pencil — an `access.admin`-gated link to a **dedicated
+  editor** at `/events/:eventId/edit` (`EventEdit`) that shows *only* the edit
+  form (title, description, location + optional link, the `startsAt`/`endsAt`
   datetime pickers, and a cover-image picker that uploads to the event's blob
-  bucket via the resumable protocol with a `<progress>` bar — one Save fans out
-  to the config Patch, which now also carries the `$blob` ref, *and* the
-  operative `PATCH /events/:eventId`) **and** an "Admin actions"
-  accordion (Create invite) both gated on `access.admin` (so event admins see
-  them), an RSVP block gated on `access.join` (`RsvpStrip`: the going/maybe/not-
+  bucket via the resumable protocol with a `<progress>` bar) — no event display,
+  but it keeps EventDetail's "card over the cover" chrome (the wallpaper behind,
+  live-previewing the *pending* cover pick) so an admin gets a feel for the theme
+  and cover photo while editing; one Save fans out to the config Patch, which also
+  carries the `$blob` ref, *and* the operative `PATCH /events/:eventId`, then
+  navigates back to the event (Cancel just navigates back). The page re-checks
+  `access.admin` itself (non-admins/404 get a message + back link). Also **an
+  "Admin actions"**
+  accordion (Create invite) gated on `access.admin` (so event admins see
+  it), an RSVP block gated on `access.join` (`RsvpStrip`: the going/maybe/not-
   going segmented control **plus guest management** when going/maybe — add/edit/
   remove named guests as clickable chips, capped at `access.guestAllowance`; the
   "Add guest" button hides at the cap and a "N of M guests allowed" hint shows),
