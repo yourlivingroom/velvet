@@ -264,6 +264,56 @@ const UserPlusIcon = () => (
     </svg>
 );
 
+// Inline "edit" pencil — currentColor + font-relative, like TrashIcon.
+const PencilIcon = () => (
+    <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M12 20h9" />
+        <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+);
+
+// An image field that *is* its own preview: a click-anywhere frame showing the
+// picked image (or a placeholder when empty), with replace/remove icon buttons
+// overlaid once there's something to act on. The native file input is visually
+// hidden — we can't use its built-in label anyway, since the pick handlers clear
+// `value` after each choice (so re-picking the same file still fires a change)
+// and the browser resets that text with it. `name` is only the alt text; the
+// picture itself is the feedback. `progress` (0..1, or null) shows an upload.
+// The overlay is a *sibling* of the frame label, not a child, so a click on an
+// icon button doesn't also open the file dialog.
+function ImagePicker({ accept = 'image/*', src, name, onChange, onRemove,
+        disabled, progress = null, placeholder = 'Click to add an image…',
+        className = '' }) {
+    return (
+        <div className={`image-picker ${className}`.trim()}>
+            <label className="image-picker__frame" title={src ? 'Replace image' : 'Add an image'}>
+                <input type="file" accept={accept} onChange={onChange} disabled={disabled} />
+                {src
+                    ? <img className="image-picker__preview" src={src} alt={name || ''} />
+                    : <span className="image-picker__placeholder">{placeholder}</span>}
+            </label>
+            {src && (
+                <div className="image-picker__actions">
+                    <label className="icon-button" title="Replace image">
+                        <input type="file" accept={accept} onChange={onChange} disabled={disabled} />
+                        <PencilIcon />
+                        <span className="sr-only">Replace image</span>
+                    </label>
+                    <button type="button" className="icon-button" title="Remove image"
+                        onClick={onRemove} disabled={disabled}>
+                        <TrashIcon />
+                        <span className="sr-only">Remove image</span>
+                    </button>
+                </div>
+            )}
+            {progress !== null && (
+                <progress className="image-picker__progress" value={progress} max={1} />
+            )}
+        </div>
+    );
+}
+
 // Segmented RSVP control (shown to anyone with /join) + guest management. When
 // the viewer is going/maybe they can add named guests: each is a clickable name
 // that opens an inline editor (text box + Save + Remove). `current` is the
@@ -469,6 +519,7 @@ function EventDetail({ id }) {
     });
     const [saving, setSaving] = useState(false);
     const [uploadPct, setUploadPct] = useState(null);   // null = idle, 0..1 = busy
+    const [pickedName, setPickedName] = useState('');  // filename we show ourselves
 
     const load = () => api(`/events/${id}`).then(setEvent).catch(() => setEvent(null));
     useEffect(() => { load(); }, [id]);
@@ -500,6 +551,7 @@ function EventDetail({ id }) {
             location: config.location ?? '',
             locationHref: config.locationHref ?? ''
         });
+        setPickedName('');
         setEditing(true);
     };
 
@@ -509,6 +561,7 @@ function EventDetail({ id }) {
         const file = e.target.files?.[0];
         e.target.value = '';   // allow re-picking the same file
         if (!file) return;
+        setPickedName(file.name);
         setUploadPct(0);
         try {
             const ref = await uploadBlob(`events/${id}`, file, setUploadPct);
@@ -607,20 +660,11 @@ function EventDetail({ id }) {
                     </label>
                     <label>Cover image</label>
                     <div className="cover-edit">
-                        {/* the wallpaper behind is the live preview */}
-                        {uploadPct !== null ? (
-                            <progress value={uploadPct} max={1} />
-                        ) : (
-                            <div className="file-row">
-                                <input type="file" accept="image/*" onChange={pickImage} />
-                                {form.picture && (
-                                    <button type="button"
-                                        onClick={() => setForm({ ...form, picture: '' })}>
-                                        Remove
-                                    </button>
-                                )}
-                            </div>
-                        )}
+                        <ImagePicker
+                            src={form.picture ? `/blobs/${form.picture}` : null}
+                            name={pickedName} onChange={pickImage}
+                            onRemove={() => { setForm({ ...form, picture: '' }); setPickedName(''); }}
+                            disabled={uploadPct !== null} progress={uploadPct} />
                     </div>
                     <div className="actions">
                         <button onClick={save} disabled={saving || uploadPct !== null}>Save</button>
@@ -1106,6 +1150,7 @@ function AccountPage({ accountId }) {
     const [name, setName] = useState('');
     const [avatar, setAvatar] = useState('');        // current pic ref, '' if none
     const [uploadPct, setUploadPct] = useState(null); // null = idle, 0..1 = busy
+    const [pickedName, setPickedName] = useState('');  // filename we show ourselves
     const [grants, setGrants] = useState(undefined); // array iff we may see it
     const [state, setState] = useState('loading'); // loading | ready | missing | saving
     // undefined = no event context / not resolvable; { response } once known.
@@ -1133,6 +1178,7 @@ function AccountPage({ accountId }) {
         const file = e.target.files?.[0];
         e.target.value = '';
         if (!file) return;
+        setPickedName(file.name);
         setUploadPct(0);
         try {
             const ref = await uploadBlob(`accounts/${accountId}`, file, setUploadPct);
@@ -1227,19 +1273,12 @@ function AccountPage({ accountId }) {
             ) : mine ? (
                 <div>
                     <div className="profile__head">
-                        <Avatar name={name} avatar={avatarObj} size={72} />
-                        <div>
-                            {uploadPct !== null ? (
-                                <progress value={uploadPct} max={1} />
-                            ) : (
-                                <div className="file-row">
-                                    <input type="file" accept="image/*" onChange={pickImage} />
-                                    {avatar && (
-                                        <button type="button" onClick={() => setAvatar('')}>Remove</button>
-                                    )}
-                                </div>
-                            )}
-                        </div>
+                        <ImagePicker className="image-picker--avatar"
+                            src={avatar ? `/blobs/${avatar}` : null}
+                            name={pickedName} onChange={pickImage}
+                            onRemove={() => { setAvatar(''); setPickedName(''); }}
+                            disabled={uploadPct !== null} progress={uploadPct}
+                            placeholder={<Avatar name={name} avatar={null} size={72} />} />
                     </div>
                     <label>Display name
                         <input value={name} autoFocus

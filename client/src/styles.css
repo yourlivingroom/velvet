@@ -137,7 +137,57 @@
     .event-description { margin-top: .5rem; }
     .cover-edit { margin: .35rem 0 1rem; }
     .cover-preview { display: block; max-width: 100%; border-radius: var(--radius-sm); margin-bottom: .5rem; }
-    .file-row { display: flex; gap: .5rem; align-items: center; }
+
+    /* image picker: the frame *is* the preview and the click target; the
+       replace/remove icons overlay its top-right corner. The native input is
+       visually hidden but still focusable/labelled — see ImagePicker in App.jsx */
+    .image-picker { position: relative; display: block; width: 100%; }
+    .image-picker input[type="file"] {
+        position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+        overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+    }
+    .image-picker__frame {
+        display: flex; align-items: center; justify-content: center;
+        /* a fixed box the preview is letterboxed into, so the layout doesn't
+           jump between a tall portrait and a wide landscape pick */
+        height: var(--image-picker-height, 11rem); cursor: pointer; overflow: hidden;
+        border: 1px dashed var(--border-strong); border-radius: var(--radius);
+        background: var(--surface); color: var(--fg-muted); text-align: center;
+    }
+    .image-picker__frame:hover { border-color: var(--accent); color: var(--fg); }
+    .image-picker__frame:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .image-picker__frame:has(input:disabled) { cursor: default; opacity: .6; }
+    .image-picker__frame:has(.image-picker__preview) { border-style: solid; }
+    .image-picker__placeholder { padding: 1rem; }
+    .image-picker__preview { display: block; width: 100%; height: 100%; object-fit: contain; }
+    .image-picker__actions {
+        position: absolute; top: .4rem; right: .4rem; display: flex; gap: .25rem;
+    }
+    .image-picker__actions .icon-button {
+        /* one is a <label>, one a <button> — box them identically so they line up */
+        box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center;
+        width: 1.9rem; height: 1.9rem; padding: 0; margin: 0; border: none; font-size: 1.1rem;
+        cursor: pointer; border-radius: var(--radius-sm);
+        background: var(--surface); color: var(--fg); box-shadow: var(--shadow-sm);
+    }
+    .image-picker__actions .icon-button:hover { background: var(--bg); }
+    .image-picker__actions .icon-button:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .image-picker__progress { display: block; width: 100%; margin-top: .4rem; }
+
+    /* round, fixed-size variant for a profile picture */
+    .image-picker--avatar { width: 72px; }
+    .image-picker--avatar .image-picker__frame {
+        width: 72px; height: 72px; border-radius: 50%; border: none; padding: 0;
+    }
+    /* an avatar is cropped, not letterboxed — a round frame wants a full bleed */
+    .image-picker--avatar .image-picker__preview { object-fit: cover; }
+    .image-picker--avatar .image-picker__actions { top: auto; bottom: -.25rem; right: -.5rem; }
+
+    /* visually hidden, still read aloud */
+    .sr-only {
+        position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+        overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+    }
 
     /* event cover as a full-view wallpaper. JS sets data-fit (a measurement);
        CSS owns the looks. `cover` fills the viewport; `center` shows the image at
