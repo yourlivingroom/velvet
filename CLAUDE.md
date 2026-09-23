@@ -94,7 +94,8 @@ one both positionally *and* by flag is an error. No other file needs editing.
   `events/<id>` (see Blob storage) — writable by its admin, readable by
   participants; the SPA stores a cover image there and references it from
   `config.picture` as `{ $blob: 'events/<id>/blb_…' }`. Other config keys the SPA
-  renders: `config.location` (shown to invitees, linked to `config.locationHref`
+  renders: `config.description` (Markdown via `react-markdown`: raw HTML is
+  ignored, unsafe link schemes stripped), `config.location` (shown to invitees, linked to `config.locationHref`
   when that's a safe-scheme URL — `safeHref` blocks `javascript:`/`data:` since
   an admin's config reaches invitees). Both views also carry an **`access`**
   block (`{ admin, join }`) so a client offers only the actions the viewer may

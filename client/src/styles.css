@@ -136,6 +136,9 @@
     .event-cover { display: block; max-width: 100%; border-radius: var(--radius); margin-bottom: .75rem; }
     .event-when, .event-location { color: var(--fg-muted); margin: .4rem 0 0; }
     .event-description { margin-top: .5rem; }
+    .event-description > :first-child { margin-top: 0; }
+    .event-description > :last-child { margin-bottom: 0; }
+    .event-description img { max-width: 100%; }
     .cover-edit { margin: .35rem 0 1rem; }
     .cover-preview { display: block; max-width: 100%; border-radius: var(--radius-sm); margin-bottom: .5rem; }
 

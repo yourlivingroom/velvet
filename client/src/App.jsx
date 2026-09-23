@@ -1,5 +1,6 @@
 import React, { useContext, useEffect, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
+import Markdown from 'react-markdown';
 
 // Fetches from the same paths the app is mounted at — Accept: application/json
 // keeps the server from handing back the SPA shell. Auth rides the HttpOnly
@@ -657,7 +658,7 @@ function EventEdit({ id }) {
                     <input value={form.title} autoFocus
                         onChange={(e) => setForm({ ...form, title: e.target.value })} />
                 </label>
-                <label>Description
+                <label>Description <span className="muted">(Markdown)</span>
                     <textarea value={form.description}
                         onChange={(e) => setForm({ ...form, description: e.target.value })} />
                 </label>
@@ -750,7 +751,12 @@ function EventDetail({ id }) {
                         </p>
                     )}
                     {config.description && (
-                        <p className="event-description">{config.description}</p>
+                        // Markdown from an event admin, shown to invitees:
+                        // react-markdown ignores raw HTML and strips unsafe
+                        // link schemes (javascript: etc.) by default.
+                        <div className="event-description">
+                            <Markdown>{config.description}</Markdown>
+                        </div>
                     )}
                 </div>
                 {event.access?.admin && (
