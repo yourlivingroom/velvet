@@ -17,12 +17,17 @@ import { registerSpa } from './spa.mjs';
 //   - OpenAPI + docs UI  (@fastify/swagger, derived from those routes)
 //   - MCP endpoint       (registerMcp), guarded by JWT validation
 //   - Auth: RS + bootstrap issuer (registerAuth)
-export async function startServer(
+//
+// Assemble the whole app onto a Fastify instance but DON'T bind a port — so
+// tests can drive it with fastify.inject() (no socket, no port conflict with a
+// running --dev server). startServer() is this plus listen() + the banner.
+export async function buildServer(
     { actions, close, redeemInvite, makeContext, backfillEventMembers }, {
         port = 3000,
-        rootPath = 'data'
+        rootPath = 'data',
+        logger = true
     } = {}) {
-    const fastify = Fastify({ logger: true });
+    const fastify = Fastify({ logger });
 
     // Shared URLs are content-negotiated on `Accept` — the SPA shell and the
     // JSON API live at the same paths (see spa.mjs). Advertise that to caches so
@@ -121,12 +126,25 @@ export async function startServer(
         if (closeAuth) await closeAuth();
     });
 
+    return fastify;
+}
+
+// The runnable server: build the app, then bind the port and point the operator
+// at the login page.
+export async function startServer(logic, opts = {}) {
+    const { port = 3000 } = opts;
+    const fastify = await buildServer(logic, opts);
+
+    const publicUrl = process.env.VELVET_PUBLIC_URL ?? `http://localhost:${port}`;
+    const authEnabled = process.env.VELVET_AUTH !== 'off';
+    const dev = process.env.VELVET_DEV === '1';
+
     try {
         await fastify.listen({ port, host: '0.0.0.0' });
     }
     catch (e) {
         fastify.log.error(e);
-        await close();
+        await logic.close();
         process.exit(1);
     }
 

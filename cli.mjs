@@ -10,7 +10,13 @@ import { ClientError } from './errors.mjs';
 // order) followed by the action's payload, if it has one. Each slot can be
 // filled positionally OR by its `--name` flag; giving one both ways is an
 // error. Everything else stays a flag.
-export function buildCli(actions, { name = 'velvet', makeContext } = {}) {
+// `out`/`err` are the sinks dispatch writes results and errors to (anything with
+// a `.write(string)`), defaulting to the real streams. Injectable so a test can
+// capture the CLI's output without monkeypatching the global process streams
+// (which would collide with the test runner's own stdout).
+export function buildCli(actions,
+        { name = 'velvet', makeContext,
+          out = process.stdout, err = process.stderr } = {}) {
     const groups = {};
     for (const [full, action] of Object.entries(actions)) {
         const [ns, verb] = full.split('.');
@@ -45,7 +51,7 @@ export function buildCli(actions, { name = 'velvet', makeContext } = {}) {
                 ...(args.length ? { args } : {}),
                 run: ({ flags, positionals }) =>
                         dispatch(action, flags, positionals, slots, required,
-                                makeContext)
+                                makeContext, out, err)
             };
         }
         commands[ns] = { summary: `Manage ${ns}.`, commands: sub };
@@ -57,7 +63,8 @@ export function buildCli(actions, { name = 'velvet', makeContext } = {}) {
     });
 }
 
-async function dispatch(action, flags, positionals, slots, required, makeContext) {
+async function dispatch(action, flags, positionals, slots, required, makeContext,
+        out = process.stdout, err = process.stderr) {
     try {
         if (positionals.length > slots.length) {
             throw new ClientError(
@@ -85,11 +92,11 @@ async function dispatch(action, flags, positionals, slots, required, makeContext
         // The CLI is an admin-only interface (filesystem trust): admin ctx (`**`).
         const ctx = await makeContext({ roles: ['admin'] });
         const result = await action.handler(input, ctx);
-        process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+        out.write(JSON.stringify(result, null, 2) + '\n');
     }
     catch (e) {
         if (e instanceof ClientError) {
-            process.stderr.write(e.message + '\n');
+            err.write(e.message + '\n');
             process.exitCode = 1;
             return;
         }

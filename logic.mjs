@@ -67,20 +67,27 @@ const EVENT_INDEXES = {
 // filesystem-trust callers like the CLI pass inline:true so they answer index
 // queries by scanning and never grab the LevelDB lock — letting them run beside
 // a live server on the same data dir.
-export default function velvetLogic(rootPath = 'data', { inline = false } = {}) {
-    const invites = pulpDb(INVITE_INDEXES, {
+export default function velvetLogic(rootPath = 'data',
+        { inline = false, makeStore } = {}) {
+    // Every collection is built through `makeStore`, defaulting to a plain
+    // pulp-db store. The seam lets a test inject a decorated store — e.g. one
+    // over a `watch:false` index whose reindex it drives on demand, to exercise
+    // handlers under eventual-consistency lag (see test/eventual-consistency).
+    const mk = makeStore ?? ((indexes, opts) => pulpDb(indexes, opts));
+
+    const invites = mk(INVITE_INDEXES, {
         dataPath: `${rootPath}/invites`,
         indexPath: `${rootPath}/indexes/invites`,
         inline
     });
 
-    const sessions = pulpDb({}, {
+    const sessions = mk({}, {
         dataPath: `${rootPath}/sessions`,
         indexPath: `${rootPath}/indexes/sessions`,
         inline
     });
 
-    const events = pulpDb(EVENT_INDEXES, {
+    const events = mk(EVENT_INDEXES, {
         dataPath: `${rootPath}/events`,
         indexPath: `${rootPath}/indexes/events`,
         inline
@@ -88,14 +95,14 @@ export default function velvetLogic(rootPath = 'data', { inline = false } = {}) 
 
     // Accounts: non-admin identities, auto-created when an invite token is
     // first redeemed (see redeemInvite). A JWT's `sub` is an account id.
-    const accounts = pulpDb({}, {
+    const accounts = mk({}, {
         dataPath: `${rootPath}/accounts`,
         indexPath: `${rootPath}/indexes/accounts`,
         inline
     });
 
     // Reservations: one RSVP per (event, account), keyed `<eventId>~<accountId>`.
-    const reservations = pulpDb({}, {
+    const reservations = mk({}, {
         dataPath: `${rootPath}/reservations`,
         indexPath: `${rootPath}/indexes/reservations`,
         inline
