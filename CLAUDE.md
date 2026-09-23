@@ -384,6 +384,13 @@ npm test                     # backend suite (node:test, test/**/*.test.mjs)
 npm start                    # = node index.mjs serve
 ```
 
+**Docker** is the primary release artifact. `./docker-build.sh` builds
+`velvet:<package version>` + `velvet:latest` (`IMAGE=...` to retag). The image
+stores everything under **`/data`** (mount a volume there; runs as the `node`
+user) and listens on **`PORT`** (default `8080`; the CMD maps it to
+`VELVET_PORT`). Set `VELVET_PUBLIC_URL` to the external URL in any real
+deployment. CLI in a running container: `docker exec <c> node index.mjs ...`.
+
 Env: `VELVET_PUBLIC_URL` (default `http://localhost:3000`; must match what a
 client hits — baked into discovery/issuer/aud), `VELVET_JWT_SECRET` (overrides
 the persisted key, not persisted), `VELVET_DATA` (default `data`), `VELVET_PORT`
@@ -562,8 +569,7 @@ inode), so it reloads once then silently stops — leaving a stale backend on
 :3000. Instead `dev.mjs` watches the velvet source *directory* (all backend
 `.mjs` live at the package root, so a non-recursive watch suffices and never
 touches `node_modules`) and restarts the child itself: SIGTERM → **await exit**
-→ respawn. The `file:../sbopts` dep isn't watched — hard-restart when it
-changes. The non-overlap is deliberate — the
+→ respawn. The non-overlap is deliberate — the
 outgoing process must free the port and cardcatalog's exclusive LevelDB lock
 before the next boots, or the reload wedges. Debounced (~120ms) to coalesce the
 multiple raw events an atomic save emits; a 4s SIGKILL safety net covers a stuck
@@ -589,8 +595,6 @@ process.
   evict-oldest policy reclaims them lazily when a later upload needs the space
   (see Blob storage). Read-time-only enforcement means a dangling ref (evicted or
   never-saved) just renders broken, never leaks.
-- **`package.json` uses a `file:../sbopts` dep** — resolves inside `silly/`, not
-  in a standalone clone. (`pulp-db` and `cardcatalog` are ordinary npm deps.)
 - **claude.ai needs a public HTTPS URL** for MCP — can't dial `http://localhost`.
   Local CLI/REST is genuinely turnkey; remote MCP needs a tunnel.
 
