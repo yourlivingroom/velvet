@@ -5,7 +5,7 @@ app = "yourlivingroom-velvet"
 primary_region = "fra"
 
 [build]
-  image = "ghcr.io/yourlivingroom/velvet:0.1.0-alpha-8033a17"
+  image = "ghcr.io/yourlivingroom/velvet:0.1.0-alpha-67f6e19"
 
 [env]
   # Must be the URL browsers use.
