@@ -384,8 +384,12 @@ npm test                     # backend suite (node:test, test/**/*.test.mjs)
 npm start                    # = node index.mjs serve
 ```
 
-**Docker** is the primary release artifact. `./docker-build.sh` builds
-`velvet:<package version>` + `velvet:latest` (`IMAGE=...` to retag). The image
+**Docker** is the primary release artifact, published to
+**`ghcr.io/yourlivingroom/velvet`** by `.github/workflows/release-image.yml`
+when a `v*` tag is pushed (`v1.2.3` → `:1.2.3`, `:1.2`, `:latest`; uses the
+workflow's `GITHUB_TOKEN`, no local registry creds). For a local build,
+`./docker-build.sh` makes `velvet:<package version>` + `velvet:latest`
+(`IMAGE=...` to retag). The image
 stores everything under **`/data`** (mount a volume there; runs as the `node`
 user) and listens on **`PORT`** (default `8080`; the CMD maps it to
 `VELVET_PORT`). Set `VELVET_PUBLIC_URL` to the external URL in any real
