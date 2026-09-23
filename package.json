@@ -2,6 +2,12 @@
   "name": "@livingroom/velvet",
   "version": "1.0.0",
   "description": "",
+  "homepage": "https://github.com/yourlivingroom/velvet#readme",
+  "bugs": "https://github.com/yourlivingroom/velvet/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yourlivingroom/velvet.git"
+  },
   "main": "index.mjs",
   "type": "module",
   "bin": {
