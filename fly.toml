@@ -8,8 +8,8 @@ primary_region = "fra"
   image = "ghcr.io/yourlivingroom/velvet:0.1.0-alpha-8033a17"
 
 [env]
-  # Must be the URL browsers use; change when a custom domain is added.
-  VELVET_PUBLIC_URL = "https://yourlivingroom-velvet.fly.dev"
+  # Must be the URL browsers use.
+  VELVET_PUBLIC_URL = "https://events.zaratan.org"
 
 [[mounts]]
   source = "velvet_data"

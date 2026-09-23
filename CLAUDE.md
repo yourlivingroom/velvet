@@ -396,7 +396,7 @@ user) and listens on **`PORT`** (default `8080`; the CMD maps it to
 deployment. CLI in a running container: `docker exec <c> node index.mjs ...`.
 
 **Fly.io** (the reference deployment, `fly.toml`): app `yourlivingroom-velvet`
-in `fra`, one machine + one 1 GB volume `velvet_data` at `/data`, Fly
+at **https://events.zaratan.org** (cert via `flyctl certs`), in `fra`, one machine + one 1 GB volume `velvet_data` at `/data`, Fly
 terminates TLS. `flyctl deploy --ha=false` (a second machine would get its *own*
 volume — split data; velvet is single-instance anyway because of the LevelDB
 lock). Fly chowns the volume mount to the image's `USER` (uid 1000), so the
