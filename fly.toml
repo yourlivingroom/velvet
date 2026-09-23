@@ -1,0 +1,28 @@
+# Fly.io deployment: one machine, one volume at /data, Fly terminates TLS.
+#   flyctl deploy                      (deploys the image below)
+#   flyctl deploy --image ghcr.io/yourlivingroom/velvet:<tag>
+app = "yourlivingroom-velvet"
+primary_region = "fra"
+
+[build]
+  image = "ghcr.io/yourlivingroom/velvet:0.1.0-alpha-8033a17"
+
+[env]
+  # Must be the URL browsers use; change when a custom domain is added.
+  VELVET_PUBLIC_URL = "https://yourlivingroom-velvet.fly.dev"
+
+[[mounts]]
+  source = "velvet_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1

@@ -395,6 +395,30 @@ user) and listens on **`PORT`** (default `8080`; the CMD maps it to
 `VELVET_PORT`). Set `VELVET_PUBLIC_URL` to the external URL in any real
 deployment. CLI in a running container: `docker exec <c> node index.mjs ...`.
 
+**Fly.io** (the reference deployment, `fly.toml`): app `yourlivingroom-velvet`
+in `fra`, one machine + one 1 GB volume `velvet_data` at `/data`, Fly
+terminates TLS. `flyctl deploy --ha=false` (a second machine would get its *own*
+volume — split data; velvet is single-instance anyway because of the LevelDB
+lock). Fly chowns the volume mount to the image's `USER` (uid 1000), so the
+non-root image just works. Bootstrap code: `flyctl logs` or
+`flyctl ssh console -C 'cat /data/.bootstrap-code'`.
+
+**Operator ergonomics backlog** — things that would make more platforms "just
+work" (noted while deploying; none done yet):
+- **Read `PORT` natively.** Fly/Cloud Run/Heroku/Railway convention; today only
+  the image's CMD maps `PORT`→`VELVET_PORT`, so a non-Docker deploy misses it.
+- **`VELVET_PUBLIC_URL` is mandatory in practice** and easy to forget (login and
+  MCP discovery advertise `localhost` otherwise). Could derive it from the
+  request, but trusting `Host`/`X-Forwarded-*` is spoofable — needs care.
+- **Volume ownership varies by platform.** Fly: automatic. k8s: needs
+  `fsGroup: 1000`. Docker bind mount: host dir must be writable by uid 1000.
+  Option: start as root, `chown /data`, drop to `node` — at the cost of
+  breaking `runAsNonRoot` clusters.
+- **Nothing enforces single-instance.** Two replicas each get their own data (or
+  fight over the LevelDB lock). Worth a loud startup check or a doc line per
+  platform.
+- **Image is amd64-only**; arm64 hosts (Pis, Graviton) can't run it.
+
 Env: `VELVET_PUBLIC_URL` (default `http://localhost:3000`; must match what a
 client hits — baked into discovery/issuer/aud), `VELVET_JWT_SECRET` (overrides
 the persisted key, not persisted), `VELVET_DATA` (default `data`), `VELVET_PORT`
