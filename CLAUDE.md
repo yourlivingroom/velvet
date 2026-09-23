@@ -380,6 +380,7 @@ velvet                       # or `velvet serve` — start server on :3000
 velvet --dev                 # dev: watched backend + Vite HMR (app at :5173)
 velvet invites create --email a@b.com   # CLI (no auth needed locally)
 npm run build:client         # build the SPA into client/dist
+npm test                     # backend suite (node:test, test/**/*.test.mjs)
 npm start                    # = node index.mjs serve
 ```
 
@@ -388,6 +389,16 @@ client hits — baked into discovery/issuer/aud), `VELVET_JWT_SECRET` (overrides
 the persisted key, not persisted), `VELVET_DATA` (default `data`), `VELVET_PORT`
 (default `3000`), `VELVET_AUTH=off` (dev: no guards, everyone admin). OpenAPI +
 docs UI at `/docs`.
+
+## Tests
+
+`test/` covers all four projections: handlers directly (`makeLogic`), REST and
+MCP via `fastify.inject()` on `buildServer()` (no port bound), and the CLI via
+`buildCli(...).run()` with injected `out`/`err` sinks. Each test gets its own
+`mkdtemp` data dir under **inline** pulp-db (no LevelDB, no lock, strongly
+consistent). `eventual-consistency.test.mjs` instead uses `watch:false` stores
+(via `velvetLogic`'s `makeStore` seam) so a write missing `awaitIndex` stays
+invisible to index reads until flushed. Helpers live in `test/helpers.mjs`.
 
 ## Frontend (SPA)
 
@@ -551,8 +562,8 @@ inode), so it reloads once then silently stops — leaving a stale backend on
 :3000. Instead `dev.mjs` watches the velvet source *directory* (all backend
 `.mjs` live at the package root, so a non-recursive watch suffices and never
 touches `node_modules`) and restarts the child itself: SIGTERM → **await exit**
-→ respawn. The `file:../` sibling deps aren't watched — hard-restart when they
-change. The non-overlap is deliberate — the
+→ respawn. The `file:../sbopts` dep isn't watched — hard-restart when it
+changes. The non-overlap is deliberate — the
 outgoing process must free the port and cardcatalog's exclusive LevelDB lock
 before the next boots, or the reload wedges. Debounced (~120ms) to coalesce the
 multiple raw events an atomic save emits; a 4s SIGKILL safety net covers a stuck
@@ -578,17 +589,20 @@ process.
   evict-oldest policy reclaims them lazily when a later upload needs the space
   (see Blob storage). Read-time-only enforcement means a dangling ref (evicted or
   never-saved) just renders broken, never leaks.
-- **`package.json` uses `file:../` deps** (`pulp-db`, `cardcatalog`, `sbopts`) —
-  resolves inside `silly/`, not in a standalone clone.
+- **`package.json` uses a `file:../sbopts` dep** — resolves inside `silly/`, not
+  in a standalone clone. (`pulp-db` and `cardcatalog` are ordinary npm deps.)
 - **claude.ai needs a public HTTPS URL** for MCP — can't dial `http://localhost`.
   Local CLI/REST is genuinely turnkey; remote MCP needs a tunnel.
 
 ## Dogfooding pulp-db + cardcatalog
 
-Exercises `@livingroom/pulp-db` and `@livingroom/cardcatalog`, which are used
-only by velvet and shaped alongside it. They're **intentionally left uncommitted
-for now** (they have no git repo) — we edit them in place to bring their feature
-set into focus, and will version them once it settles. No need to flag this.
+Exercises `@yourlivingroom/pulp-db` and `@yourlivingroom/cardcatalog`, which are
+shaped alongside velvet. Each has its own git repo (`../pulp-db`,
+`../cardcatalog`) and is **published to npm**; velvet consumes the published
+versions. So editing the sibling source does **not** reach velvet: change it
+there (with its own tests/README), publish (cardcatalog before pulp-db, which
+depends on it), bump velvet's range, `npm install`. npm takes ~a minute to serve
+a fresh publish — poll `npm view <pkg>@<ver> version` before installing.
 
 **Index materialization is a choice.** An index is a *definition* (a
 `process`/`emit` fn) plus a *materialization*:
@@ -609,9 +623,8 @@ emitting `[accountId, startsAt, endsAt] → id` per member. Keys are stored with
 date-times chronologically — so `byUser.getMany([accountId])` (a prefix query:
 cardcatalog ranges `[key, KEY_BOTTOM]..[key, KEY_TOP]`) streams that account's
 events **already ordered** untimed-first-then-chronological, no sort needed live.
-This is what backs "my events" (see Domain). Note the **inline** path
-(`inlineCatalogs`) filters by prefix but does *not* sort — so a consumer that
-needs order under inline (the CLI) must sort too; `events.list` does.
+This is what backs "my events" (see Domain). `events.list` also re-sorts in the
+handler; that predates inline mode matching live ordering and is now redundant.
 
 **Strong-consistency escape hatch:** `store.edit(path, updater, { awaitIndex:
 true })` blocks until the live index reflects the write (the writer drives
@@ -620,6 +633,10 @@ inline or unchanged. `invites.create` uses it, so a fresh invite is redeemable
 the instant create returns (removes the create-then-redeem race — no test poll).
 Without it, the live index is eventually consistent (watcher lag ~sub-second),
 which is fine where a human-in-the-loop delay precedes the read.
+
+A third materialization, **`watch: false`**, keeps the LevelDB but runs no
+watcher: the index changes only when driven (`awaitIndex` or `reindex()`). The
+test suite uses it to make watcher lag reproducible (see Tests).
 
 Fixes made along the way:
 - pulp-db `get()` was broken (`fs.promises.read` → `readFile`); added `list()`
